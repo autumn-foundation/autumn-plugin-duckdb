@@ -7,12 +7,14 @@ const YEAR_1: i32 = -719_162;
 const YEAR_9999_END: i32 = 2_932_896;
 const DAY_MICROS: i64 = 86_400_000_000;
 
-fn duckdb() -> duckdb::Connection {
-    duckdb::Connection::open_in_memory().unwrap()
+thread_local! {
+    /// One oracle database for each test thread.
+    static ORACLE: duckdb::Connection = duckdb::Connection::open_in_memory().unwrap();
 }
 
-fn cast(conn: &duckdb::Connection, sql: &str, value: i64) -> String {
-    conn.query_row(sql, [value], |row| row.get(0)).unwrap()
+/// Gives the DuckDB text for `value` with `sql`.
+fn cast(sql: &str, value: i64) -> String {
+    ORACLE.with(|conn| conn.query_row(sql, [value], |row| row.get(0)).unwrap())
 }
 
 #[test]
@@ -55,7 +57,10 @@ fn times_give_text_with_a_short_fraction() {
 #[test]
 fn timestamps_join_the_date_and_the_time_with_t() {
     assert_eq!(timestamp_text(Unit::Micros, 0), "1970-01-01T00:00:00");
-    assert_eq!(timestamp_text(Unit::Micros, -1), "1969-12-31T23:59:59.999999");
+    assert_eq!(
+        timestamp_text(Unit::Micros, -1),
+        "1969-12-31T23:59:59.999999"
+    );
     assert_eq!(
         timestamp_text(Unit::Seconds, 1_709_164_800),
         "2024-02-29T00:00:00"
@@ -88,15 +93,13 @@ proptest! {
 
     #[test]
     fn date_text_equals_the_duckdb_cast(days in YEAR_1..=YEAR_9999_END) {
-        let conn = duckdb();
-        let expected = cast(&conn, "SELECT CAST(DATE '1970-01-01' + ?::INTEGER AS VARCHAR)", i64::from(days));
+        let expected = cast("SELECT CAST(DATE '1970-01-01' + ?::INTEGER AS VARCHAR)", i64::from(days));
         prop_assert_eq!(date_text(days), expected);
     }
 
     #[test]
     fn time_text_equals_the_duckdb_cast(micros in 0..DAY_MICROS) {
-        let conn = duckdb();
-        let expected = cast(&conn, "SELECT CAST(TIME '00:00:00' + to_microseconds(?::BIGINT) AS VARCHAR)", micros);
+        let expected = cast("SELECT CAST(TIME '00:00:00' + to_microseconds(?::BIGINT) AS VARCHAR)", micros);
         prop_assert_eq!(time_text(Unit::Micros, micros), expected);
     }
 
@@ -104,8 +107,7 @@ proptest! {
     fn timestamp_text_equals_the_duckdb_cast(
         micros in i64::from(YEAR_1) * DAY_MICROS..(i64::from(YEAR_9999_END) + 1) * DAY_MICROS
     ) {
-        let conn = duckdb();
-        let expected = cast(&conn, "SELECT CAST(make_timestamp(?::BIGINT) AS VARCHAR)", micros);
+        let expected = cast("SELECT CAST(make_timestamp(?::BIGINT) AS VARCHAR)", micros);
         prop_assert_eq!(timestamp_text(Unit::Micros, micros), expected.replacen(' ', "T", 1));
     }
 }
