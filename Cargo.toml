@@ -1,0 +1,57 @@
+[package]
+name = "autumn-plugin-duckdb"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Autumn plugin: run DuckDB SQL queries from Autumn handlers."
+license = "Apache-2.0"
+repository = "https://github.com/autumn-foundation/autumn-plugin-duckdb"
+readme = "README.md"
+keywords = ["autumn", "duckdb", "sql", "analytics", "plugin"]
+categories = ["web-programming", "database"]
+exclude = [".github/", "docs/", "CLAUDE.md", "clippy.toml", "proptest-regressions/"]
+
+[features]
+default = ["bundled"]
+# Builds DuckDB from source. Without it, link a system `libduckdb`.
+bundled = ["duckdb/bundled"]
+# Builds the Parquet extension into DuckDB.
+parquet = ["duckdb/parquet"]
+# Builds the JSON extension into DuckDB.
+json = ["duckdb/json"]
+
+[dependencies]
+# No default features: the host app selects the Autumn features.
+autumn-web = { version = ">=0.7, <0.8", default-features = false }
+axum = { version = "0.8", default-features = false }
+duckdb = { version = "1.10505", default-features = false }
+http = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+toml = "1.1"
+tracing = "0.1"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+module_name_repetitions = "allow"
+redundant_pub_crate = "allow"

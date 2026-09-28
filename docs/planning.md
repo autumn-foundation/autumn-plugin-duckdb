@@ -47,7 +47,7 @@ Question: "How can we make this plugin fail?" Each answer gives a countermeasure
 | How to make it fail | Countermeasure |
 |---------------------|----------------|
 | Put user input into the SQL text. | Bind values with prepared statements. Do not format SQL. |
-| Send two statements in one string. | DuckDB prepares one statement only. A test proves it. |
+| Send two statements in one string. `duckdb-rs` runs all but the last statement in `prepare`. | Count the statements outside literals and comments. Refuse more than one. DuckDB is the test oracle. |
 | Send the wrong number of parameters. | Compare the parameter count before the run. Give a typed error. |
 | Read `/etc/passwd` with `read_csv` through an injected query. | Disable external access by default. Allow only listed directories. |
 | Turn the limits off again with `SET`. | Lock the configuration after startup. |
@@ -57,7 +57,7 @@ Question: "How can we make this plugin fail?" Each answer gives a countermeasure
 | Lose an interrupt that comes before the query starts. | Mark the ticket as cancelled. Repeat the interrupt until the call ends. |
 | Leave a query running after a client disconnects. | A drop guard interrupts the query. |
 | Use more connections than the limit. | A semaphore permit stays with the connection until the blocking call ends. |
-| Give the next caller a connection with an open transaction. | Roll back on return. Drop the connection if the rollback fails. |
+| Give the next caller a connection with an open transaction. `is_autocommit` always gives `true`. | Always send `ROLLBACK` on return. Drop the connection on an unexpected error. |
 | Read a very large result into memory. | A row limit and a byte limit. Too much gives an error, not a partial result. |
 | Lose data at shutdown. | Run `CHECKPOINT` on a writable file database. |
 | Open an in-memory database in read-only mode. | Validation refuses it. |
@@ -76,6 +76,10 @@ Question: "How can we make this plugin fail?" Each answer gives a countermeasure
 - The `duckdb` crate 1.10505 wraps DuckDB. The `bundled` feature builds DuckDB from source.
 - A `Connection` is `Send` but not `Sync`. `try_clone` gives a new connection to the same database.
 - `InterruptHandle::interrupt` stops the running query on one connection. The query fails with an `INTERRUPT Error`.
+- An interrupt before the query starts has no effect. A probe proved it.
+- `Connection::prepare` runs each statement before the last one. It does not refuse a batch.
+- `Connection::is_autocommit` always gives `true`.
+- DuckDB error messages can hold SQL text and key values.
 - `duckdb-rs` cannot bind lists, structs or maps as parameters.
 - One process can open a file database for writes. Many processes can open it read-only.
 - DuckDB error messages start with the error class, for example `Catalog Error: ...`.
@@ -135,6 +139,7 @@ Ideas 1 to 23.
 |--------|------|-----|
 | `config` | pure | `DuckDbConfig`, layering and validation. |
 | `param` | pure | `Param`, the bound value type. |
+| `statement` | pure | Counts the statements in SQL text. |
 | `temporal` | pure | Date, time and timestamp text. |
 | `value` | pure | `Value` and `Row`. Conversion from DuckDB values. Result size. |
 | `decode` | pure | Serde decoding of `Value` and `Row`. |
@@ -149,15 +154,16 @@ Ideas 1 to 23.
 
 Each item is one cycle. Red: write a test that fails. Green: write the minimum code. Refactor: clean up with all tests green.
 
-1. `temporal`: known dates, times and timestamps. Property: date text equals the DuckDB cast.
-2. `param`: each Rust type converts to the correct `Param`.
-3. `value`: each DuckDB value converts. Size counts text, blobs and nested values.
-4. `decode`: structs, options, numbers, decimals, lists, maps and enums decode. Wrong types give an error.
-5. `error`: the class parser and the HTTP status map.
-6. `config`: defaults, TOML, profile layers, environment variables and validation.
-7. `pool`: open, access limits, lock, reuse and rollback on return.
-8. `client`: fetch, execute, parameter count, limits, timeout, drop and shutdown.
-9. `plugin`: the extractor, health, metrics and boot errors, in `TestApp`.
+1. `statement`: counts in plain SQL, literals, identifiers, dollar quotes and comments. Property: the count equals the DuckDB count.
+2. `temporal`: known dates, times and timestamps. Property: date text equals the DuckDB cast.
+3. `param`: each Rust type converts to the correct `Param`.
+4. `value`: each DuckDB value converts. Size counts text, blobs and nested values.
+5. `decode`: structs, options, numbers, decimals, lists, maps and enums decode. Wrong types give an error.
+6. `error`: the class parser and the HTTP status map.
+7. `config`: defaults, TOML, profile layers, environment variables and validation.
+8. `pool`: open, access limits, lock, reuse and rollback on return.
+9. `client`: fetch, execute, parameter count, limits, timeout, drop and shutdown.
+10. `plugin`: the extractor, health, metrics and boot errors, in `TestApp`.
 
 ## 7. Review
 
