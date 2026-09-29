@@ -170,6 +170,9 @@ pub(crate) const MANAGED_SETTINGS: &[&str] = &[
     "lock_configuration",
 ];
 
+/// DuckDB options for one connection. Each call has a new connection, so they have no effect.
+const SESSION_SETTINGS: &[&str] = &["search_path", "schema"];
+
 /// The largest call timeout: one day.
 const MAX_TIMEOUT_MS: u64 = 86_400_000;
 
@@ -277,6 +280,12 @@ impl DuckDbConfig {
                 return fail(
                     "settings",
                     "keys must be `a-z 0-9 _` and start with a letter or `_`",
+                );
+            }
+            if SESSION_SETTINGS.contains(&key.as_str()) {
+                return fail(
+                    "settings",
+                    &format!("must not set `{key}`: it applies to one connection only"),
                 );
             }
             if MANAGED_SETTINGS.contains(&key.as_str()) {

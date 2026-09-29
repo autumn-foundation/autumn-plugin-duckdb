@@ -30,7 +30,7 @@ use crate::metrics::{Metrics, Outcome};
 use crate::param::Param;
 use crate::pool::{self, Pool, Setup};
 use crate::statement;
-use crate::value::{Row, Value};
+use crate::value::{Row, Value, shape_of};
 
 /// The pause between repeated interrupts of one call.
 const INTERRUPT_EVERY: Duration = Duration::from_millis(10);
@@ -585,6 +585,22 @@ pub(crate) fn read_rows(
         .map(Statement::column_names)
         .unwrap_or_default()
         .into();
+    // Check the types before the first row: `duckdb-rs` panics on some of them.
+    let shapes = match rows.as_ref() {
+        Some(stmt) => columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| {
+                shape_of(&stmt.column_logical_type(index)).map_err(|type_name| {
+                    DuckDbError::UnsupportedType {
+                        column: column.clone(),
+                        type_name: type_name.to_owned(),
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        None => Vec::new(),
+    };
     let mut out = Vec::new();
     let mut bytes = 0_usize;
     while out.len() < limits.take {
@@ -599,8 +615,13 @@ pub(crate) fn read_rows(
                 limit: limits.max_rows,
             });
         }
-        let values = (0..columns.len())
-            .map(|index| row.get::<_, duckdb::types::Value>(index).map(Value::from))
+        let values = shapes
+            .iter()
+            .enumerate()
+            .map(|(index, shape)| {
+                row.get::<_, duckdb::types::Value>(index)
+                    .map(|raw| Value::from_shaped(raw, shape))
+            })
             .collect::<duckdb::Result<Vec<_>>>()?;
         let row = Row::new(Arc::clone(&columns), values);
         bytes = bytes.saturating_add(row.size());

@@ -10,11 +10,14 @@
 //! - [`Value::size`] is an estimate in bytes. Each value counts 16. Text and blobs add their bytes.
 //!   Lists, structs and maps add their items. Struct keys add their bytes. The byte limit uses it.
 //! - A [`Row`] serializes as a map from column name to value.
+//! - A map serializes as a map if each key is a scalar. Else it serializes as a list of `{key, value}` entries.
 
 use std::sync::Arc;
 
 use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
 use serde::{Serialize, Serializer};
+
+use duckdb::core::{LogicalTypeHandle, LogicalTypeId};
 
 use crate::temporal::{self, Unit};
 
@@ -198,6 +201,115 @@ impl From<duckdb::types::Value> for Value {
     }
 }
 
+/// How to read the values of one result type.
+///
+/// `duckdb-rs` loses some facts in nested values. The shape keeps them from the column type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Shape {
+    /// Use the plain conversion.
+    Plain,
+    /// A `TIMESTAMPTZ`: the text ends with `Z`.
+    TimestampTz,
+    /// A `DECIMAL` with a scale.
+    Decimal(u8),
+    /// A `UHUGEINT`. A nested value arrives as a `HUGEINT` with the same bits.
+    UHugeInt,
+    /// A `LIST` or an `ARRAY`.
+    List(Box<Self>),
+    /// A `STRUCT`, in field order.
+    Struct(Vec<Self>),
+    /// A `MAP`: the key shape and the value shape.
+    Map(Box<Self>, Box<Self>),
+}
+
+/// Gives the shape of a column type, or the name of a type that the plugin refuses.
+///
+/// The refused types lose data or panic in `duckdb-rs`.
+pub(crate) fn shape_of(ty: &LogicalTypeHandle) -> Result<Shape, &'static str> {
+    Ok(match ty.id() {
+        LogicalTypeId::TimeNs => return Err("TIME_NS"),
+        LogicalTypeId::TimeTZ => return Err("TIMETZ"),
+        LogicalTypeId::Bit => return Err("BIT"),
+        LogicalTypeId::Bignum => return Err("BIGNUM"),
+        LogicalTypeId::Variant => return Err("VARIANT"),
+        LogicalTypeId::Unsupported => return Err("an unknown type"),
+        LogicalTypeId::TimestampTZ => Shape::TimestampTz,
+        LogicalTypeId::Decimal => Shape::Decimal(ty.decimal_scale()),
+        LogicalTypeId::UHugeint => Shape::UHugeInt,
+        LogicalTypeId::List | LogicalTypeId::Array => {
+            Shape::List(Box::new(shape_of(&ty.child(0))?))
+        }
+        LogicalTypeId::Struct => Shape::Struct(
+            (0..ty.num_children())
+                .map(|index| shape_of(&ty.child(index)))
+                .collect::<Result<_, _>>()?,
+        ),
+        LogicalTypeId::Map => Shape::Map(
+            Box::new(shape_of(&ty.child(0))?),
+            Box::new(shape_of(&ty.child(1))?),
+        ),
+        LogicalTypeId::Union => {
+            for index in 0..ty.num_children() {
+                shape_of(&ty.child(index))?;
+            }
+            Shape::Plain
+        }
+        _ => Shape::Plain,
+    })
+}
+
+impl Value {
+    /// Converts a DuckDB value with the facts of its shape.
+    pub(crate) fn from_shaped(raw: duckdb::types::Value, shape: &Shape) -> Self {
+        use duckdb::types::Value as Raw;
+        match (raw, shape) {
+            (Raw::Timestamp(unit, v), Shape::TimestampTz) => {
+                let text = temporal::timestamp_text(unit_of(unit), v);
+                if text.ends_with("infinity") {
+                    Self::Timestamp(text)
+                } else {
+                    Self::Timestamp(text + "Z")
+                }
+            }
+            (Raw::HugeInt(v), Shape::Decimal(scale)) => Self::Decimal(decimal_text(v, *scale)),
+            #[allow(clippy::cast_sign_loss, reason = "the bits are a UHUGEINT")]
+            (Raw::HugeInt(v), Shape::UHugeInt) => Self::UHugeInt(v as u128),
+            (Raw::List(items) | Raw::Array(items), Shape::List(item)) => Self::List(
+                items
+                    .into_iter()
+                    .map(|raw| Self::from_shaped(raw, item))
+                    .collect(),
+            ),
+            // `OrderedMap` has no owned iterator. The code clones the entries.
+            (Raw::Struct(fields), Shape::Struct(shapes)) => Self::Struct(
+                fields
+                    .iter()
+                    .zip(shapes.iter().chain(std::iter::repeat(&Shape::Plain)))
+                    .map(|((k, v), shape)| (k.clone(), Self::from_shaped(v.clone(), shape)))
+                    .collect(),
+            ),
+            (Raw::Map(entries), Shape::Map(key, value)) => Self::Map(
+                entries
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            Self::from_shaped(k.clone(), key),
+                            Self::from_shaped(v.clone(), value),
+                        )
+                    })
+                    .collect(),
+            ),
+            (raw, _) => Self::from(raw),
+        }
+    }
+}
+
+/// Gives the text of `value` with `scale` decimal places.
+fn decimal_text(value: i128, scale: u8) -> String {
+    duckdb::types::Decimal::new(38, scale, value)
+        .map_or_else(|_| value.to_string(), |decimal| decimal.to_string())
+}
+
 /// Maps the `duckdb-rs` time unit.
 const fn unit_of(unit: duckdb::types::TimeUnit) -> Unit {
     use duckdb::types::TimeUnit;
@@ -206,6 +318,28 @@ const fn unit_of(unit: duckdb::types::TimeUnit) -> Unit {
         TimeUnit::Millisecond => Unit::Millis,
         TimeUnit::Microsecond => Unit::Micros,
         TimeUnit::Nanosecond => Unit::Nanos,
+    }
+}
+
+/// One map entry with a key that JSON cannot use as an object key.
+#[derive(Serialize)]
+struct Entry<'a> {
+    key: &'a Value,
+    value: &'a Value,
+}
+
+impl Value {
+    /// Returns `true` for a value that serializes as text or a number. JSON can use it as a key.
+    const fn is_scalar_key(&self) -> bool {
+        !matches!(
+            self,
+            Self::Null
+                | Self::Blob(_)
+                | Self::Interval { .. }
+                | Self::List(_)
+                | Self::Struct(_)
+                | Self::Map(_)
+        )
     }
 }
 
@@ -244,10 +378,17 @@ impl Serialize for Value {
                 out.end()
             }
             Self::Struct(fields) => serializer.collect_map(fields.iter().map(|(k, v)| (k, v))),
-            Self::Map(entries) => {
+            Self::Map(entries) if entries.iter().all(|(k, _)| k.is_scalar_key()) => {
                 let mut out = serializer.serialize_map(Some(entries.len()))?;
                 for (k, v) in entries {
                     out.serialize_entry(k, v)?;
+                }
+                out.end()
+            }
+            Self::Map(entries) => {
+                let mut out = serializer.serialize_seq(Some(entries.len()))?;
+                for (key, value) in entries {
+                    out.serialize_element(&Entry { key, value })?;
                 }
                 out.end()
             }

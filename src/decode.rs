@@ -154,6 +154,37 @@ where
     Ok(value)
 }
 
+/// Decodes a whole decimal into an integer. Other values use `deserialize_any`.
+macro_rules! integers {
+    ($($method:ident)*) => {
+        $(
+            fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
+                match self {
+                    Value::Decimal(text) => visit_whole(text, visitor),
+                    _ => self.deserialize_any(visitor),
+                }
+            }
+        )*
+    };
+}
+
+/// Visits a decimal with no fraction as an integer. The error does not show the text.
+fn visit_whole<'de, V: Visitor<'de>>(text: &str, visitor: V) -> Result<V::Value, DecodeError> {
+    let whole = match text.split_once('.') {
+        Some((whole, fraction)) if fraction.bytes().all(|b| b == b'0') => whole,
+        Some(_) => return Err(DecodeError::custom("the decimal has a fraction")),
+        None => text,
+    };
+    let value: i128 = whole
+        .parse()
+        .map_err(|_| DecodeError::custom("the decimal is not an integer"))?;
+    match (i64::try_from(value), u64::try_from(value)) {
+        (Ok(small), _) => visitor.visit_i64(small),
+        (_, Ok(small)) => visitor.visit_u64(small),
+        _ => visitor.visit_i128(value),
+    }
+}
+
 impl<'de> Deserializer<'de> for &'de Value {
     type Error = DecodeError;
 
@@ -250,9 +281,13 @@ impl<'de> Deserializer<'de> for &'de Value {
         visitor.visit_unit()
     }
 
+    integers! {
+        deserialize_i8 deserialize_i16 deserialize_i32 deserialize_i64 deserialize_i128
+        deserialize_u8 deserialize_u16 deserialize_u32 deserialize_u64 deserialize_u128
+    }
+
     forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 char str string bytes byte_buf
-        unit unit_struct tuple tuple_struct map struct identifier
+        bool char str string bytes byte_buf unit unit_struct tuple tuple_struct map struct identifier
     }
 }
 
@@ -266,6 +301,24 @@ fn parse_decimal(text: &str) -> Result<f64, DecodeError> {
 struct RowDe<'de>(&'de Row);
 
 impl<'de> RowDe<'de> {
+    /// Decodes the columns as map entries, by name.
+    fn by_name<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
+        visitor.visit_map(Columns::new(self.0))
+    }
+
+    /// Decodes the columns as sequence items, by position. The length must match.
+    fn by_position<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
+        let mut columns = Columns::new(self.0);
+        let value = visitor.visit_seq(&mut columns)?;
+        match columns.remaining() {
+            0 => Ok(value),
+            _ => Err(DecodeError::invalid_length(
+                self.0.values().len(),
+                &"fewer columns",
+            )),
+        }
+    }
+
     /// Gives the only value of a row with one column.
     fn only(&self) -> Result<(&'de str, &'de Value), DecodeError> {
         match (self.0.columns(), self.0.values()) {
@@ -294,11 +347,16 @@ impl<'de> Deserializer<'de> for RowDe<'de> {
     type Error = DecodeError;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
-        self.deserialize_map(visitor)
+        self.by_name(visitor)
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
-        visitor.visit_map(Columns::new(self.0))
+        match (self.0.columns(), self.0.values()) {
+            ([name], [value @ (Value::Map(_) | Value::Struct(_))]) => value
+                .deserialize_map(visitor)
+                .map_err(|err| err.in_column(name)),
+            _ => self.by_name(visitor),
+        }
     }
 
     fn deserialize_struct<V: Visitor<'de>>(
@@ -307,18 +365,15 @@ impl<'de> Deserializer<'de> for RowDe<'de> {
         _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, DecodeError> {
-        self.deserialize_map(visitor)
+        self.by_name(visitor)
     }
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
-        let mut columns = Columns::new(self.0);
-        let value = visitor.visit_seq(&mut columns)?;
-        match columns.remaining() {
-            0 => Ok(value),
-            _ => Err(DecodeError::invalid_length(
-                self.0.values().len(),
-                &"fewer columns",
-            )),
+        match (self.0.columns(), self.0.values()) {
+            ([name], [value @ Value::List(_)]) => value
+                .deserialize_seq(visitor)
+                .map_err(|err| err.in_column(name)),
+            _ => self.by_position(visitor),
         }
     }
 
@@ -327,7 +382,7 @@ impl<'de> Deserializer<'de> for RowDe<'de> {
         _len: usize,
         visitor: V,
     ) -> Result<V::Value, DecodeError> {
-        self.deserialize_seq(visitor)
+        self.by_position(visitor)
     }
 
     fn deserialize_tuple_struct<V: Visitor<'de>>(
@@ -336,7 +391,7 @@ impl<'de> Deserializer<'de> for RowDe<'de> {
         _len: usize,
         visitor: V,
     ) -> Result<V::Value, DecodeError> {
-        self.deserialize_seq(visitor)
+        self.by_position(visitor)
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
