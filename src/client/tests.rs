@@ -489,3 +489,21 @@ fn outcomes_follow_the_result() {
     );
     assert_eq!(outcome::<()>(&Err(DuckDbError::NotFound)), Outcome::Failed);
 }
+
+#[tokio::test]
+async fn ping_works_when_each_connection_is_busy() {
+    let db = db_with(|c| c.max_connections = 1).await;
+    let busy = db.clone();
+    let slow = tokio::spawn(async move {
+        busy.with_connection(|_| {
+            std::thread::sleep(Duration::from_millis(500));
+            Ok(())
+        })
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let start = Instant::now();
+    db.ping().await.unwrap();
+    assert!(start.elapsed() < Duration::from_millis(400), "the ping waited for the pool");
+    slow.await.unwrap().unwrap();
+}
