@@ -1,5 +1,6 @@
 //! Autumn plugin for DuckDB.
 
+mod client;
 pub mod config;
 mod decode;
 mod error;

@@ -6,7 +6,7 @@
 //! - A message with no class gives the class `Unknown`. A `duckdb-rs` error that is not a DuckDB failure gives `Client`.
 //! - The error text shows the class only. [`DuckDbError::detail`] gives the full message.
 //!   A DuckDB message can hold SQL text and key values.
-//! - A constraint error gives HTTP 409. A timeout gives 504. A write conflict, a cancel and a shutdown give 503.
+//! - No rows gives HTTP 404. A constraint error gives HTTP 409. A timeout gives 504. A write conflict, a cancel and a shutdown give 503.
 //!   All other errors give 500.
 //! - A timeout and a write conflict are retryable.
 
@@ -76,6 +76,9 @@ pub enum DuckDbError {
         /// The byte limit.
         limit_bytes: usize,
     },
+    /// The query returned no rows, and the caller needs one.
+    #[error("the query returned no rows")]
+    NotFound,
     /// The app shuts down. The plugin starts no new calls.
     #[error("the app shuts down: the DuckDB plugin starts no new calls")]
     ShuttingDown,
