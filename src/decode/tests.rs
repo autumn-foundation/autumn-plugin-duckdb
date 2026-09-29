@@ -282,3 +282,16 @@ fn large_128_bit_values_decode_into_128_bit_types() {
         u128::MAX
     );
 }
+
+#[test]
+fn an_unknown_field_error_hides_the_key() {
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Only {
+        #[allow(dead_code)]
+        a: i64,
+    }
+    let value = Value::Map(vec![(text("alice@example.com"), Value::Int(1))]);
+    let err = value.decode::<Only>().unwrap_err();
+    assert!(!err.to_string().contains("alice"), "{err}");
+}

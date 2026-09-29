@@ -131,3 +131,11 @@ fn or_http_converts_the_error() {
     let ok: Result<u8, DuckDbError> = Ok(1);
     assert_eq!(ok.or_http().unwrap(), 1);
 }
+
+#[test]
+fn the_debug_text_hides_the_detail() {
+    let err = database("INSERT INTO t VALUES (1)");
+    let text = format!("{err:?} {:?}", err.clone().into_autumn());
+    assert!(!text.contains("id: 1"), "{text}");
+    assert!(text.contains("Constraint"), "{text}");
+}
