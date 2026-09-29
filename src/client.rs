@@ -540,7 +540,6 @@ pub(crate) fn read_rows(
     limits: Limits,
     stop: &dyn Fn() -> bool,
 ) -> Result<Vec<Row>, DuckDbError> {
-    let _ = stop;
     let mut stmt = prepare(conn, sql, params.len())?;
     let mut rows = stmt.query(params_from_iter(params.iter()))?;
     let columns: Arc<[String]> = rows
@@ -551,6 +550,9 @@ pub(crate) fn read_rows(
     let mut out = Vec::new();
     let mut bytes = 0_usize;
     while out.len() < limits.take {
+        if stop() {
+            return Err(DuckDbError::Cancelled);
+        }
         let Some(row) = rows.next()? else {
             break;
         };

@@ -7,8 +7,8 @@
 //! - A decimal becomes exact text. Dates, times and timestamps become ISO 8601 text. See [`crate::temporal`].
 //! - An enum becomes text. An array becomes a list. A union becomes its value. A geometry becomes a blob.
 //! - An unknown future DuckDB type becomes its debug text.
-//! - [`Value::size`] counts the bytes of text and blobs, 8 for a scalar and 16 for a 128-bit value.
-//!   Struct keys count. The row limit and the byte limit use it.
+//! - [`Value::size`] is an estimate in bytes. Each value counts 16. Text and blobs add their bytes.
+//!   Lists, structs and maps add their items. Struct keys add their bytes. The byte limit uses it.
 //! - A [`Row`] serializes as a map from column name to value.
 
 use std::sync::Arc;
@@ -17,6 +17,9 @@ use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
 use serde::{Serialize, Serializer};
 
 use crate::temporal::{self, Unit};
+
+/// The bytes that each value counts for the byte limit, also an empty or null value.
+const VALUE_BYTES: usize = 16;
 
 /// A result value.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,10 +72,7 @@ impl Value {
     /// The size of the value for the byte limit.
     #[must_use]
     pub fn size(&self) -> usize {
-        match self {
-            Self::Null | Self::Bool(_) => 1,
-            Self::Int(_) | Self::UInt(_) | Self::Float(_) => 8,
-            Self::HugeInt(_) | Self::UHugeInt(_) | Self::Interval { .. } => 16,
+        let content = match self {
             Self::Decimal(v)
             | Self::Text(v)
             | Self::Date(v)
@@ -82,7 +82,9 @@ impl Value {
             Self::List(items) => items.iter().map(Self::size).sum(),
             Self::Struct(fields) => fields.iter().map(|(k, v)| k.len() + v.size()).sum(),
             Self::Map(entries) => entries.iter().map(|(k, v)| k.size() + v.size()).sum(),
-        }
+            _ => 0,
+        };
+        VALUE_BYTES + content
     }
 
     /// Returns `true` for [`Value::Null`].

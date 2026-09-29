@@ -8,7 +8,7 @@
 //!   A DuckDB message can hold SQL text and key values.
 //! - No rows gives HTTP 404. A constraint error gives HTTP 409. A timeout gives 504. A write conflict, a cancel and a shutdown give 503.
 //!   All other errors give 500.
-//! - A timeout and a write conflict are retryable.
+//! - A write conflict is retryable. A timeout is not: the query can have changed data before the interrupt.
 
 use std::time::Duration;
 
@@ -199,7 +199,7 @@ impl DuckDbError {
     /// Returns `true` if a retry of the same call can succeed.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Timeout { .. }) || self.is_conflict()
+        self.is_conflict()
     }
 
     /// The HTTP status for this error.

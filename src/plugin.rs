@@ -4,7 +4,9 @@
 //!
 //! - `build` reads the configuration. A bad configuration stops the boot in the startup hook.
 //! - The startup hook opens the database on a blocking thread and puts the handle in the app state.
-//! - When Autumn marks the shutdown, a watch task shuts the handle down. The shutdown hook does the same.
+//! - Calls work while Autumn drains the requests. The shutdown hook runs after the drain.
+//!   It refuses new calls, interrupts open calls and runs `CHECKPOINT` on a writable file.
+//! - If the drain times out, Autumn can end the process before the hook. The WAL keeps the data.
 //! - The readiness check and the metrics source use the same handle.
 
 use std::borrow::Cow;
@@ -24,9 +26,6 @@ use crate::pool::Setup;
 
 /// The plugin name in Autumn diagnostics.
 pub const PLUGIN_NAME: &str = "autumn-plugin-duckdb";
-
-/// The interval of the shutdown watch.
-const SHUTDOWN_WATCH: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// State that the plugin hooks share.
 #[derive(Default)]
@@ -169,8 +168,7 @@ impl Plugin for DuckDbPlugin {
                         AutumnError::internal_server_error_msg(format!("{PLUGIN_NAME}: {err}"))
                     })?;
                 state.insert_extension(db.clone());
-                let _ = shared.handle.set(db.clone());
-                tokio::spawn(watch_shutdown(state, db));
+                let _ = shared.handle.set(db);
                 tracing::info!("the DuckDB plugin is ready");
                 Ok(())
             }
@@ -180,17 +178,6 @@ impl Plugin for DuckDbPlugin {
             async move { shared.shutdown().await }
         })
     }
-}
-
-/// Shuts the handle down when Autumn marks the shutdown.
-///
-/// Autumn runs the shutdown hooks after the request drain. The drain can end the process first.
-async fn watch_shutdown(state: AppState, db: DuckDb) {
-    while !state.probes().is_shutting_down() {
-        tokio::time::sleep(SHUTDOWN_WATCH).await;
-    }
-    tracing::info!("the app shuts down: interrupting the open DuckDB calls");
-    db.shutdown().await;
 }
 
 impl std::fmt::Debug for DuckDbPlugin {
