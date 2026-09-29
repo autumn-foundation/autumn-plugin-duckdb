@@ -8,7 +8,7 @@
 //!   A DuckDB message can hold SQL text and key values.
 //! - No rows gives HTTP 404. A constraint error gives HTTP 409. A timeout gives 504. A write conflict, a cancel and a shutdown give 503.
 //!   All other errors give 500.
-//! - A timeout and a write conflict are retryable.
+//! - A write conflict is retryable. A timeout is not: the query can have changed data before the interrupt.
 
 use std::time::Duration;
 
@@ -19,7 +19,9 @@ use crate::config::ConfigError;
 use crate::decode::DecodeError;
 
 /// An error from the plugin.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+///
+/// The debug text also hides the DuckDB message.
+#[derive(Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DuckDbError {
     /// The configuration is not valid.
@@ -43,6 +45,18 @@ pub enum DuckDbError {
         /// The statements in the SQL text.
         statements: usize,
     },
+    /// The SQL text ends in an open literal or block comment. The plugin cannot count its statements.
+    #[error("the SQL ends in an open literal or comment")]
+    OpenLiteral,
+    /// A result column has a type that the plugin cannot read without data loss.
+    #[error("column `{column}` has the type {type_name}: cast it to VARCHAR in the SQL")]
+    #[non_exhaustive]
+    UnsupportedType {
+        /// The column name.
+        column: String,
+        /// The DuckDB type name.
+        type_name: String,
+    },
     /// The number of parameters is not the number of placeholders.
     #[error("the SQL has {placeholders} placeholders, but the query has {parameters} parameters")]
     #[non_exhaustive]
@@ -52,15 +66,17 @@ pub enum DuckDbError {
         /// The bound parameters.
         parameters: usize,
     },
-    /// The call did not complete in time. The plugin interrupted it.
+    /// The call did not complete in time. If the query started, the plugin interrupts it.
+    ///
+    /// The query can have changed data before the interrupt.
     #[error("the call did not complete in {timeout:?}")]
     #[non_exhaustive]
     Timeout {
         /// The timeout.
         timeout: Duration,
     },
-    /// Someone interrupted the call.
-    #[error("the call was cancelled")]
+    /// An interrupt stopped the query. The interrupt did not come from a timeout or a shutdown.
+    #[error("an interrupt stopped the call")]
     Cancelled,
     /// The result has more rows than the limit.
     #[error("the query returned more than {limit} rows")]
@@ -93,7 +109,54 @@ pub enum DuckDbError {
     NotInstalled,
 }
 
-/// Gives the class of a DuckDB message.
+impl std::fmt::Debug for DuckDbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Config(err) => f.debug_tuple("Config").field(err).finish(),
+            Self::Database { class, detail } => f
+                .debug_struct("Database")
+                .field("class", class)
+                .field("detail_bytes", &detail.len())
+                .finish(),
+            Self::MultipleStatements { statements } => f
+                .debug_struct("MultipleStatements")
+                .field("statements", statements)
+                .finish(),
+            Self::OpenLiteral => f.write_str("OpenLiteral"),
+            Self::UnsupportedType { column, type_name } => f
+                .debug_struct("UnsupportedType")
+                .field("column", column)
+                .field("type_name", type_name)
+                .finish(),
+            Self::ParameterCount {
+                placeholders,
+                parameters,
+            } => f
+                .debug_struct("ParameterCount")
+                .field("placeholders", placeholders)
+                .field("parameters", parameters)
+                .finish(),
+            Self::Timeout { timeout } => {
+                f.debug_struct("Timeout").field("timeout", timeout).finish()
+            }
+            Self::Cancelled => f.write_str("Cancelled"),
+            Self::TooManyRows { limit } => {
+                f.debug_struct("TooManyRows").field("limit", limit).finish()
+            }
+            Self::ResultTooLarge { limit_bytes } => f
+                .debug_struct("ResultTooLarge")
+                .field("limit_bytes", limit_bytes)
+                .finish(),
+            Self::NotFound => f.write_str("NotFound"),
+            Self::ShuttingDown => f.write_str("ShuttingDown"),
+            Self::Decode(err) => f.debug_tuple("Decode").field(err).finish(),
+            Self::TaskFailed => f.write_str("TaskFailed"),
+            Self::NotInstalled => f.write_str("NotInstalled"),
+        }
+    }
+}
+
+/// Returns the class of a DuckDB message.
 pub(crate) fn class_of(message: &str) -> &str {
     let first_line = message.lines().next().unwrap_or_default();
     first_line
@@ -152,7 +215,7 @@ impl DuckDbError {
     /// Returns `true` if a retry of the same call can succeed.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Timeout { .. }) || self.is_conflict()
+        self.is_conflict()
     }
 
     /// The HTTP status for this error.

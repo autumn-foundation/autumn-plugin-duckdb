@@ -7,7 +7,7 @@ use super::*;
 fn select(sql: &str) -> Value {
     let conn = duckdb::Connection::open_in_memory().unwrap();
     let raw: Raw = conn.query_row(sql, [], |row| row.get(0)).unwrap();
-    Value::from(raw)
+    Value::from_raw(raw)
 }
 
 fn text(value: &str) -> Value {
@@ -16,28 +16,31 @@ fn text(value: &str) -> Value {
 
 #[test]
 fn integers_convert_by_sign_and_width() {
-    assert_eq!(Value::from(Raw::TinyInt(-1)), Value::Int(-1));
-    assert_eq!(Value::from(Raw::SmallInt(-2)), Value::Int(-2));
-    assert_eq!(Value::from(Raw::Int(-3)), Value::Int(-3));
-    assert_eq!(Value::from(Raw::BigInt(-4)), Value::Int(-4));
-    assert_eq!(Value::from(Raw::UTinyInt(1)), Value::UInt(1));
-    assert_eq!(Value::from(Raw::USmallInt(2)), Value::UInt(2));
-    assert_eq!(Value::from(Raw::UInt(3)), Value::UInt(3));
-    assert_eq!(Value::from(Raw::UBigInt(4)), Value::UInt(4));
-    assert_eq!(Value::from(Raw::HugeInt(-5)), Value::HugeInt(-5));
-    assert_eq!(Value::from(Raw::UHugeInt(5)), Value::UHugeInt(5));
+    assert_eq!(Value::from_raw(Raw::TinyInt(-1)), Value::Int(-1));
+    assert_eq!(Value::from_raw(Raw::SmallInt(-2)), Value::Int(-2));
+    assert_eq!(Value::from_raw(Raw::Int(-3)), Value::Int(-3));
+    assert_eq!(Value::from_raw(Raw::BigInt(-4)), Value::Int(-4));
+    assert_eq!(Value::from_raw(Raw::UTinyInt(1)), Value::UInt(1));
+    assert_eq!(Value::from_raw(Raw::USmallInt(2)), Value::UInt(2));
+    assert_eq!(Value::from_raw(Raw::UInt(3)), Value::UInt(3));
+    assert_eq!(Value::from_raw(Raw::UBigInt(4)), Value::UInt(4));
+    assert_eq!(Value::from_raw(Raw::HugeInt(-5)), Value::HugeInt(-5));
+    assert_eq!(Value::from_raw(Raw::UHugeInt(5)), Value::UHugeInt(5));
 }
 
 #[test]
 fn scalars_convert() {
-    assert_eq!(Value::from(Raw::Null), Value::Null);
-    assert_eq!(Value::from(Raw::Boolean(true)), Value::Bool(true));
-    assert_eq!(Value::from(Raw::Float(0.5)), Value::Float(0.5));
-    assert_eq!(Value::from(Raw::Double(0.25)), Value::Float(0.25));
-    assert_eq!(Value::from(Raw::Text("a".into())), text("a"));
-    assert_eq!(Value::from(Raw::Enum("e".into())), text("e"));
-    assert_eq!(Value::from(Raw::Blob(vec![1])), Value::Blob(vec![1]));
-    assert_eq!(Value::from(Raw::Geometry(vec![2])), Value::Blob(vec![2]));
+    assert_eq!(Value::from_raw(Raw::Null), Value::Null);
+    assert_eq!(Value::from_raw(Raw::Boolean(true)), Value::Bool(true));
+    assert_eq!(Value::from_raw(Raw::Float(0.5)), Value::Float(0.5));
+    assert_eq!(Value::from_raw(Raw::Double(0.25)), Value::Float(0.25));
+    assert_eq!(Value::from_raw(Raw::Text("a".into())), text("a"));
+    assert_eq!(Value::from_raw(Raw::Enum("e".into())), text("e"));
+    assert_eq!(Value::from_raw(Raw::Blob(vec![1])), Value::Blob(vec![1]));
+    assert_eq!(
+        Value::from_raw(Raw::Geometry(vec![2])),
+        Value::Blob(vec![2])
+    );
 }
 
 #[test]
@@ -55,23 +58,23 @@ fn decimals_become_exact_text() {
 #[test]
 fn temporal_values_become_iso_text() {
     assert_eq!(
-        Value::from(Raw::Date32(0)),
+        Value::from_raw(Raw::Date32(0)),
         Value::Date("1970-01-01".into())
     );
     assert_eq!(
-        Value::from(Raw::Time64(TimeUnit::Microsecond, 1_500_000)),
+        Value::from_raw(Raw::Time64(TimeUnit::Microsecond, 1_500_000)),
         Value::Time("00:00:01.5".into())
     );
     assert_eq!(
-        Value::from(Raw::Timestamp(TimeUnit::Second, 60)),
+        Value::from_raw(Raw::Timestamp(TimeUnit::Second, 60)),
         Value::Timestamp("1970-01-01T00:01:00".into())
     );
     assert_eq!(
-        Value::from(Raw::Timestamp(TimeUnit::Millisecond, 1)),
+        Value::from_raw(Raw::Timestamp(TimeUnit::Millisecond, 1)),
         Value::Timestamp("1970-01-01T00:00:00.001".into())
     );
     assert_eq!(
-        Value::from(Raw::Timestamp(TimeUnit::Nanosecond, 1)),
+        Value::from_raw(Raw::Timestamp(TimeUnit::Nanosecond, 1)),
         Value::Timestamp("1970-01-01T00:00:00.000000001".into())
     );
     assert_eq!(
@@ -112,7 +115,7 @@ fn nested_values_convert() {
     );
     assert_eq!(select("SELECT union_value(n := 2)"), Value::Int(2));
     assert_eq!(
-        Value::from(Raw::Struct(OrderedMap::from(vec![(
+        Value::from_raw(Raw::Struct(OrderedMap::from(vec![(
             "u".to_owned(),
             Raw::Union(Box::new(Raw::Null))
         )]))),
@@ -122,19 +125,20 @@ fn nested_values_convert() {
 
 #[test]
 fn size_counts_bytes_and_scalars() {
-    assert_eq!(Value::Null.size(), 1);
-    assert_eq!(Value::Bool(true).size(), 1);
-    assert_eq!(Value::Int(1).size(), 8);
-    assert_eq!(Value::UInt(1).size(), 8);
-    assert_eq!(Value::Float(1.0).size(), 8);
+    assert_eq!(Value::Null.size(), 16);
+    assert_eq!(Value::Bool(true).size(), 16);
+    assert_eq!(Value::Int(1).size(), 16);
+    assert_eq!(Value::UInt(1).size(), 16);
+    assert_eq!(Value::Float(1.0).size(), 16);
     assert_eq!(Value::HugeInt(1).size(), 16);
     assert_eq!(Value::UHugeInt(1).size(), 16);
-    assert_eq!(text("héllo").size(), 6);
-    assert_eq!(Value::Decimal("1.50".into()).size(), 4);
-    assert_eq!(Value::Date("1970-01-01".into()).size(), 10);
-    assert_eq!(Value::Time("00:00:00".into()).size(), 8);
-    assert_eq!(Value::Timestamp("x".into()).size(), 1);
-    assert_eq!(Value::Blob(vec![0; 7]).size(), 7);
+    assert_eq!(text("").size(), 16);
+    assert_eq!(text("héllo").size(), 22);
+    assert_eq!(Value::Decimal("1.50".into()).size(), 20);
+    assert_eq!(Value::Date("1970-01-01".into()).size(), 26);
+    assert_eq!(Value::Time("00:00:00".into()).size(), 24);
+    assert_eq!(Value::Timestamp("x".into()).size(), 17);
+    assert_eq!(Value::Blob(vec![0; 7]).size(), 23);
     let interval = Value::Interval {
         months: 0,
         days: 0,
@@ -146,11 +150,13 @@ fn size_counts_bytes_and_scalars() {
 #[test]
 fn size_counts_nested_values_and_keys() {
     let list = Value::List(vec![Value::Int(1), text("ab")]);
-    assert_eq!(list.size(), 10);
+    assert_eq!(list.size(), 50);
+    let empty_items = Value::List(vec![text(""); 100]);
+    assert_eq!(empty_items.size(), 16 + 1600);
     let fields = Value::Struct(vec![("key".into(), Value::Int(1))]);
-    assert_eq!(fields.size(), 11);
+    assert_eq!(fields.size(), 35);
     let map = Value::Map(vec![(text("k"), Value::Int(1))]);
-    assert_eq!(map.size(), 9);
+    assert_eq!(map.size(), 49);
 }
 
 #[test]
@@ -235,7 +241,7 @@ fn a_row_gives_values_by_column_name() {
     assert_eq!(row.get("name"), Some(&text("ada")));
     assert_eq!(row.get("id"), Some(&Value::Int(1)));
     assert_eq!(row.get("missing"), None);
-    assert_eq!(row.size(), 19);
+    assert_eq!(row.size(), 51);
     assert_eq!(row.into_values().len(), 3);
 }
 
@@ -248,5 +254,24 @@ fn a_row_serializes_as_a_map() {
     assert_eq!(
         serde_json::to_value(&row).unwrap(),
         json!({"id": 1, "name": "ada"})
+    );
+}
+
+#[test]
+fn a_map_with_a_nested_key_serializes_as_entries() {
+    let map = Value::Map(vec![(Value::List(vec![Value::Int(1)]), text("a"))]);
+    assert_eq!(
+        serde_json::to_value(&map).unwrap(),
+        json!([{"key": [1], "value": "a"}])
+    );
+    let blob_key = Value::Map(vec![(Value::Blob(vec![1]), Value::Int(2))]);
+    assert_eq!(
+        serde_json::to_value(&blob_key).unwrap(),
+        json!([{"key": [1], "value": 2}])
+    );
+    let scalar_keys = Value::Map(vec![(Value::Int(1), text("a"))]);
+    assert_eq!(
+        serde_json::to_value(&scalar_keys).unwrap(),
+        json!({"1": "a"})
     );
 }

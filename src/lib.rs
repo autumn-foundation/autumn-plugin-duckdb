@@ -34,7 +34,7 @@
 //! # }
 //! ```
 //!
-//! The plugin reads `[duckdb]` in `autumn.toml`. See [`config`] for the keys.
+//! The plugin reads `[duckdb]` in `autumn.toml`. See [`DuckDbConfig`] for the keys.
 //!
 //! # Security rules
 //!
@@ -43,8 +43,9 @@
 //! - SQL cannot read or write files by default. List the directories in `allowed_directories`.
 //! - DuckDB does not download or load extensions by default. Load them in a setup hook.
 //! - SQL cannot change the DuckDB configuration after startup.
-//! - Each call has a timeout, a row limit and a byte limit. The plugin interrupts a timed-out query.
-//! - Logs do not have SQL text, parameter values or DuckDB messages.
+//! - Each call has a timeout. Each fetch also has a row limit and a byte limit.
+//! - The plugin interrupts a timed-out query. Each call gets a new connection, so no session state leaks.
+//! - Logs, error text and debug text do not have SQL text, parameter values or DuckDB messages.
 
 mod client;
 pub mod config;
@@ -67,5 +68,4 @@ pub use duckdb;
 pub use error::{DuckDbError, DuckDbResultExt};
 pub use param::Param;
 pub use plugin::{DuckDbPlugin, PLUGIN_NAME};
-pub use pool::Setup;
 pub use value::{Row, Value};

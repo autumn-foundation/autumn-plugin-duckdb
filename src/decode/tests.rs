@@ -63,8 +63,10 @@ fn a_missing_column_gives_an_error() {
 fn a_row_decodes_into_a_tuple_by_position() {
     let row = row(&[("a", Value::Int(1)), ("b", text("x"))]);
     assert_eq!(row.decode::<(i64, String)>().unwrap(), (1, "x".into()));
-    assert!(row.decode::<(i64,)>().is_err());
-    assert!(row.decode::<(i64, String, bool)>().is_err());
+    let err = row.decode::<(i64,)>().unwrap_err();
+    assert!(err.to_string().contains("fewer columns"), "{err}");
+    let err = row.decode::<(i64, String, bool)>().unwrap_err();
+    assert!(err.to_string().contains("tuple of size 3"), "{err}");
 }
 
 #[test]
@@ -281,4 +283,84 @@ fn large_128_bit_values_decode_into_128_bit_types() {
         Value::UHugeInt(u128::MAX).decode::<u128>().unwrap(),
         u128::MAX
     );
+}
+
+#[test]
+fn an_unknown_field_error_hides_the_key() {
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Only {
+        #[allow(dead_code)]
+        a: i64,
+    }
+    let value = Value::Map(vec![(text("alice@example.com"), Value::Int(1))]);
+    let err = value.decode::<Only>().unwrap_err();
+    assert!(!err.to_string().contains("alice"), "{err}");
+}
+
+#[test]
+fn whole_decimals_decode_into_integers() {
+    assert_eq!(Value::Decimal("5".into()).decode::<i64>().unwrap(), 5);
+    assert_eq!(
+        Value::Decimal("-12.00".into()).decode::<i32>().unwrap(),
+        -12
+    );
+    assert_eq!(Value::Decimal("7.0".into()).decode::<u64>().unwrap(), 7);
+    assert!(Value::Decimal("5.5".into()).decode::<i64>().is_err());
+    assert!(Value::Decimal("300".into()).decode::<u8>().is_err());
+}
+
+#[test]
+fn a_one_column_list_or_map_row_decodes_into_its_value() {
+    let list = row(&[(
+        "l",
+        Value::List(vec![Value::Float(1.5), Value::Float(2.25)]),
+    )]);
+    assert_eq!(list.decode::<Vec<f64>>().unwrap(), vec![1.5, 2.25]);
+    let map = row(&[("m", Value::Map(vec![(text("a"), Value::Int(1))]))]);
+    let decoded: HashMap<String, i64> = map.decode().unwrap();
+    assert_eq!(decoded, HashMap::from([("a".into(), 1)]));
+    let scalar = row(&[("n", Value::Int(3))]);
+    assert_eq!(scalar.decode::<Vec<i64>>().unwrap(), vec![3]);
+    let by_name: HashMap<String, i64> = scalar.decode().unwrap();
+    assert_eq!(by_name, HashMap::from([("n".into(), 3)]));
+}
+
+#[test]
+fn a_one_column_scalar_error_names_the_column() {
+    let err = row(&[("n", text("x"))]).decode::<i64>().unwrap_err();
+    assert_eq!(err.column(), Some("n"));
+}
+
+#[test]
+fn a_row_decodes_into_json() {
+    let row = row(&[
+        ("id", Value::Int(1)),
+        ("tags", Value::List(vec![text("a")])),
+    ]);
+    let json: serde_json::Value = row.decode().unwrap();
+    assert_eq!(json, serde_json::json!({"id": 1, "tags": ["a"]}));
+}
+
+#[test]
+fn a_row_decodes_into_a_newtype_or_an_enum() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Count(i64);
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "lowercase")]
+    enum Mood {
+        Sad,
+    }
+    assert_eq!(
+        row(&[("n", Value::Int(4))]).decode::<Count>().unwrap(),
+        Count(4)
+    );
+    assert_eq!(
+        row(&[("m", text("sad"))]).decode::<Mood>().unwrap(),
+        Mood::Sad
+    );
+    let err = row(&[("a", text("sad")), ("b", text("sad"))])
+        .decode::<Mood>()
+        .unwrap_err();
+    assert!(err.to_string().contains("one column"), "{err}");
 }

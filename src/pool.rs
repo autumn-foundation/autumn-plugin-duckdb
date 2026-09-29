@@ -10,18 +10,17 @@
 //! 4. Disable external access, unless `enable_external_access` is `true`.
 //! 5. Lock the configuration, unless `lock_configuration` is `false`.
 //!
-//! [`Pool`] gives each call one connection:
+//! [`Pool`] gives each call one new connection:
 //!
-//! - A permit limits the connections in use to `max_connections`. The permit stays with the lease.
-//! - A lease takes an idle connection, or else makes a new one from the root connection.
-//! - [`Lease::release`] sends `ROLLBACK`, then keeps the connection for the next call.
-//!   An unexpected error drops the connection. A dropped lease drops its connection.
-//! - After [`Pool::close`], `acquire` fails and the pool keeps no connections.
+//! - A permit limits the connections in use to `max_connections`. [`Pool::acquire`] waits for a permit.
+//! - [`Permit::connect`] makes a new connection from the root connection. The lease keeps the permit.
+//! - A dropped lease closes its connection. DuckDB rolls back an open transaction.
+//!   So no session state, for example `USE` or a temp table, reaches the next call.
+//! - After [`Pool::close`], `acquire` fails.
 //! - The ping and the checkpoint use the root connection. They do not wait for a permit.
 //!
-//! Each function here that calls DuckDB blocks. Call it on a blocking thread.
+//! Each function here that calls DuckDB blocks. Call it on a blocking thread. `acquire` does not call DuckDB.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use duckdb::Connection;
@@ -30,8 +29,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::config::{AccessMode, DuckDbConfig};
 use crate::error::DuckDbError;
 
-/// Rust code that runs on the database at startup, before the plugin applies the limits.
-pub type Setup = Arc<dyn Fn(&Connection) -> duckdb::Result<()> + Send + Sync>;
+/// Rust code that runs on the database at startup.
+///
+/// It runs before the plugin disables external access and locks the configuration.
+pub(crate) type Setup = Arc<dyn Fn(&Connection) -> duckdb::Result<()> + Send + Sync>;
 
 /// Opens the database. See the module contract.
 pub(crate) fn open(config: &DuckDbConfig, setups: &[Setup]) -> Result<Connection, DuckDbError> {
@@ -91,30 +92,27 @@ const fn bool_text(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
-/// Gives `text` as a SQL string literal.
+/// Returns `text` as a SQL string literal.
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
-}
-
-/// Returns `true` if a `ROLLBACK` error only says that no transaction was open.
-fn no_transaction(err: &duckdb::Error) -> bool {
-    matches!(err, duckdb::Error::DuckDBFailure(_, Some(message))
-        if message.contains("no transaction is active"))
 }
 
 /// The connection pool.
 pub(crate) struct Pool {
     root: Mutex<Connection>,
-    idle: Mutex<Vec<Connection>>,
     permits: Arc<Semaphore>,
     size: usize,
-    closed: AtomicBool,
+}
+
+/// A right to open one connection.
+pub(crate) struct Permit {
+    pool: Arc<Pool>,
+    permit: OwnedSemaphorePermit,
 }
 
 /// One connection and its permit.
 pub(crate) struct Lease {
     conn: Connection,
-    pool: Arc<Pool>,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -123,84 +121,58 @@ impl Pool {
     pub(crate) fn new(root: Connection, size: usize) -> Arc<Self> {
         Arc::new(Self {
             root: Mutex::new(root),
-            idle: Mutex::new(Vec::new()),
             permits: Arc::new(Semaphore::new(size)),
             size,
-            closed: AtomicBool::new(false),
         })
     }
 
-    /// Waits for a permit and gives a connection.
-    ///
-    /// An idle connection is ready at once. A new connection is a fast in-process call.
-    pub(crate) async fn acquire(self: &Arc<Self>) -> Result<Lease, DuckDbError> {
+    /// Waits for a permit.
+    pub(crate) async fn acquire(self: &Arc<Self>) -> Result<Permit, DuckDbError> {
         let permit = Arc::clone(&self.permits)
             .acquire_owned()
             .await
             .map_err(|_| DuckDbError::ShuttingDown)?;
-        if self.closed.load(Ordering::Acquire) {
-            return Err(DuckDbError::ShuttingDown);
-        }
-        let idle = self
-            .idle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop();
-        let conn = match idle {
-            Some(conn) => conn,
-            None => self
-                .root
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .try_clone()?,
-        };
-        Ok(Lease {
-            conn,
+        Ok(Permit {
             pool: Arc::clone(self),
-            _permit: permit,
+            permit,
         })
     }
 
-    /// The idle connections.
-    #[cfg(test)]
-    pub(crate) fn idle(&self) -> usize {
-        self.idle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .len()
-    }
-
-    /// Returns `true` if no lease is out.
+    /// Returns `true` if no permit is out.
     pub(crate) fn is_quiet(&self) -> bool {
         self.permits.available_permits() == self.size
     }
 
-    /// Refuses new leases and drops the idle connections.
+    /// Refuses new permits.
     pub(crate) fn close(&self) {
-        self.closed.store(true, Ordering::Release);
         self.permits.close();
-        self.idle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
     }
 
     /// Runs `SELECT 1` on the root connection.
     pub(crate) fn ping(&self) -> Result<(), DuckDbError> {
-        self.root
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .execute_batch("SELECT 1")?;
+        self.root().execute_batch("SELECT 1")?;
         Ok(())
     }
 
     /// Runs `CHECKPOINT` on the root connection.
     pub(crate) fn checkpoint(&self) -> Result<(), DuckDbError> {
-        self.root
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .execute_batch("CHECKPOINT")?;
+        self.root().execute_batch("CHECKPOINT")?;
         Ok(())
+    }
+
+    fn root(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.root.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Permit {
+    /// Makes a new connection.
+    pub(crate) fn connect(self) -> Result<Lease, DuckDbError> {
+        let conn = self.pool.root().try_clone()?;
+        Ok(Lease {
+            conn,
+            _permit: self.permit,
+        })
     }
 }
 
@@ -208,28 +180,6 @@ impl Lease {
     /// The connection.
     pub(crate) const fn connection(&self) -> &Connection {
         &self.conn
-    }
-
-    /// Gives the connection back to the pool.
-    pub(crate) fn release(self) {
-        let Self {
-            conn,
-            pool,
-            _permit,
-        } = self;
-        match conn.execute_batch("ROLLBACK") {
-            Ok(()) => {
-                tracing::warn!("a DuckDB call left a transaction open: the plugin rolled it back");
-            }
-            Err(err) if no_transaction(&err) => {}
-            Err(_) => return,
-        }
-        if !pool.closed.load(Ordering::Acquire) {
-            pool.idle
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(conn);
-        }
     }
 }
 

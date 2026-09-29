@@ -61,7 +61,7 @@ pub enum AccessMode {
     ReadWrite,
 }
 
-/// The plugin settings.
+/// The plugin configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 #[non_exhaustive]
@@ -99,7 +99,7 @@ pub struct DuckDbConfig {
     pub checkpoint_on_shutdown: bool,
     /// Other DuckDB options, for example `default_order = "desc"`.
     ///
-    /// The keys that the plugin sets are not allowed here.
+    /// Do not put a key here that the plugin sets.
     pub settings: BTreeMap<String, String>,
 }
 
@@ -170,6 +170,9 @@ pub(crate) const MANAGED_SETTINGS: &[&str] = &[
     "lock_configuration",
 ];
 
+/// DuckDB options for one connection. Each call has a new connection, so they have no effect.
+const SESSION_SETTINGS: &[&str] = &["search_path", "schema"];
+
 /// The largest call timeout: one day.
 const MAX_TIMEOUT_MS: u64 = 86_400_000;
 
@@ -238,7 +241,10 @@ impl DuckDbConfig {
             return fail("path", "must be a file path or `:memory:`");
         }
         if lower.starts_with("md:") || lower.starts_with("motherduck:") {
-            return fail("path", "must be a local file: MotherDuck is not supported");
+            return fail(
+                "path",
+                "must be a local file: the plugin does not support MotherDuck",
+            );
         }
         if self.access_mode == AccessMode::ReadOnly && self.is_in_memory() {
             return fail("access_mode", "must not be `read_only` for `:memory:`");
@@ -279,6 +285,12 @@ impl DuckDbConfig {
                     "keys must be `a-z 0-9 _` and start with a letter or `_`",
                 );
             }
+            if SESSION_SETTINGS.contains(&key.as_str()) {
+                return fail(
+                    "settings",
+                    &format!("must not set `{key}`: it applies to one connection only"),
+                );
+            }
             if MANAGED_SETTINGS.contains(&key.as_str()) {
                 return fail(
                     "settings",
@@ -302,7 +314,7 @@ impl DuckDbConfig {
     }
 }
 
-/// Gives the selected profile text and the normalized profile, as Autumn does.
+/// Returns the selected profile text and the Autumn profile name, as Autumn does.
 fn active_profile(env: &dyn Env) -> (String, String) {
     let selected = ["AUTUMN_ENV", "AUTUMN_PROFILE"]
         .iter()
@@ -318,7 +330,7 @@ fn active_profile(env: &dyn Env) -> (String, String) {
     (selected, profile)
 }
 
-/// The inline profile names to read, in order. The canonical name is last.
+/// The inline profile names to read, in order. The standard name is last.
 fn inline_profile_names(profile: &str) -> Vec<&str> {
     match profile {
         "prod" => vec!["production", "prod"],
@@ -389,7 +401,7 @@ fn apply_env(into: &mut toml::Table, section: &str, env: &dyn Env) -> Result<(),
         let Ok(raw) = env.var(&name) else {
             continue;
         };
-        let bad = || ConfigError(format!("{name}: can not read {raw:?}"));
+        let bad = || ConfigError(format!("{name}: cannot read {raw:?}"));
         let value = match kind {
             Kind::Text => toml::Value::String(raw.clone()),
             Kind::Integer => {

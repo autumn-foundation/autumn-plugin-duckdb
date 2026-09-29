@@ -105,11 +105,12 @@ fn errors_map_to_http_status() {
 }
 
 #[test]
-fn timeouts_and_write_conflicts_are_retryable() {
+fn only_write_conflicts_are_retryable() {
     let timeout = DuckDbError::Timeout {
         timeout: Duration::from_secs(1),
     };
-    assert!(timeout.is_retryable());
+    // A timed-out query can have changed data. A retry can change it again.
+    assert!(!timeout.is_retryable());
     assert!(with_class("TransactionContext", "Conflict on tuple deletion").is_retryable());
     assert!(!with_class("Constraint", "dup").is_retryable());
     assert!(!DuckDbError::ShuttingDown.is_retryable());
@@ -130,4 +131,19 @@ fn or_http_converts_the_error() {
     );
     let ok: Result<u8, DuckDbError> = Ok(1);
     assert_eq!(ok.or_http().unwrap(), 1);
+}
+
+#[test]
+fn the_debug_text_hides_the_detail() {
+    let err = database("INSERT INTO t VALUES (1)");
+    let text = format!("{err:?} {:?}", err.clone().into_autumn());
+    assert!(!text.contains("id: 1"), "{text}");
+    assert!(text.contains("Constraint"), "{text}");
+}
+
+#[test]
+fn a_failure_without_a_message_gives_unknown() {
+    let failure = duckdb::ffi::Error::new(1);
+    let err = DuckDbError::from(duckdb::Error::DuckDBFailure(failure, None));
+    assert_eq!(err.class(), Some("Unknown"));
 }

@@ -2,9 +2,10 @@
 //!
 //! # Contract
 //!
-//! - Each Rust scalar converts to one [`Param`]. `None` converts to [`Param::Null`].
+//! - Each Rust scalar in the `From` list converts to one [`Param`]. `None` converts to [`Param::Null`].
 //! - A [`Param`] binds as the DuckDB value of the same type.
-//! - DuckDB casts text to the parameter type. Bind a date as `"2024-01-31"`.
+//! - DuckDB casts text to the parameter type if the SQL gives the type, for example `d > ?`.
+//!   In a function call, cast the parameter in the SQL: `year(?::DATE)`.
 //! - Lists, structs and maps do not bind. `duckdb-rs` does not support them.
 
 use duckdb::ToSql;
@@ -24,6 +25,8 @@ pub enum Param {
     UInt(u64),
     /// A `HUGEINT`.
     HugeInt(i128),
+    /// A `UHUGEINT`.
+    UHugeInt(u128),
     /// A `DOUBLE`.
     Float(f64),
     /// A `VARCHAR`.
@@ -41,6 +44,7 @@ impl ToSql for Param {
             Self::Int(v) => ToSqlOutput::Owned(Value::BigInt(*v)),
             Self::UInt(v) => ToSqlOutput::Owned(Value::UBigInt(*v)),
             Self::HugeInt(v) => ToSqlOutput::Owned(Value::HugeInt(*v)),
+            Self::UHugeInt(v) => ToSqlOutput::Owned(Value::UHugeInt(*v)),
             Self::Float(v) => ToSqlOutput::Owned(Value::Double(*v)),
             Self::Text(v) => ToSqlOutput::Borrowed(ValueRef::Text(v.as_bytes())),
             Self::Blob(v) => ToSqlOutput::Borrowed(ValueRef::Blob(v)),
@@ -48,7 +52,7 @@ impl ToSql for Param {
     }
 }
 
-/// Implements `From` for types that convert with a variant and a cast.
+/// Implements `From<source>` for `Param` through one variant.
 macro_rules! from_scalar {
     ($variant:ident($target:ty): $($source:ty),+) => {
         $(
@@ -65,6 +69,21 @@ from_scalar!(Bool(bool): bool);
 from_scalar!(Int(i64): i8, i16, i32, i64);
 from_scalar!(UInt(u64): u8, u16, u32, u64);
 from_scalar!(HugeInt(i128): i128);
+from_scalar!(UHugeInt(u128): u128);
+
+impl From<isize> for Param {
+    fn from(value: isize) -> Self {
+        // `isize` has 64 bits or fewer on each Rust target.
+        Self::Int(i64::try_from(value).unwrap_or(i64::MAX))
+    }
+}
+
+impl From<usize> for Param {
+    fn from(value: usize) -> Self {
+        // `usize` has 64 bits or fewer on each Rust target.
+        Self::UInt(u64::try_from(value).unwrap_or(u64::MAX))
+    }
+}
 from_scalar!(Float(f64): f32, f64);
 from_scalar!(Text(String): String, &str, &String);
 from_scalar!(Blob(Vec<u8>): Vec<u8>, &[u8]);

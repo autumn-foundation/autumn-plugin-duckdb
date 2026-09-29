@@ -4,7 +4,7 @@
 //!
 //! - `duckdb_calls_started_total` counts the calls that got past the shutdown check.
 //! - `duckdb_calls_total` counts the calls that ended, with the label `outcome`.
-//! - `duckdb_calls_open` is the calls that did not end yet.
+//! - `duckdb_calls_open` gives the number of calls that did not end.
 //! - `duckdb_rows_returned_total` counts the rows that queries gave to callers.
 
 use std::sync::atomic::{AtomicU64, Ordering};

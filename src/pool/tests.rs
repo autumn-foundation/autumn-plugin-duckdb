@@ -181,88 +181,75 @@ fn pool(size: usize) -> Arc<Pool> {
     Pool::new(open(&config, &[]).unwrap(), size)
 }
 
-#[tokio::test]
-async fn a_lease_gives_a_connection_and_returns_it() {
-    let pool = pool(2);
-    assert!(pool.is_quiet());
-    let lease = pool.acquire().await.unwrap();
-    assert!(!pool.is_quiet());
-    lease.connection().execute_batch("SELECT 1").unwrap();
-    lease.release();
-    assert!(pool.is_quiet());
-    assert_eq!(pool.idle(), 1);
+async fn lease(pool: &Arc<Pool>) -> Lease {
+    pool.acquire().await.unwrap().connect().unwrap()
 }
 
 #[tokio::test]
-async fn the_permit_limits_the_leases() {
+async fn a_permit_gives_a_connection_and_a_drop_frees_it() {
+    let pool = pool(2);
+    assert!(pool.is_quiet());
+    let lease = lease(&pool).await;
+    assert!(!pool.is_quiet());
+    lease.connection().execute_batch("SELECT 1").unwrap();
+    drop(lease);
+    assert!(pool.is_quiet());
+    let permit = pool.acquire().await.unwrap();
+    assert!(!pool.is_quiet());
+    drop(permit);
+    assert!(pool.is_quiet());
+}
+
+#[tokio::test]
+async fn the_permit_limits_the_connections() {
     let pool = pool(1);
-    let first = pool.acquire().await.unwrap();
+    let first = lease(&pool).await;
     let waiting = tokio::time::timeout(Duration::from_millis(50), pool.acquire()).await;
-    assert!(waiting.is_err(), "a second lease must wait");
-    first.release();
+    assert!(waiting.is_err(), "a second permit must wait");
+    drop(first);
     let second = tokio::time::timeout(Duration::from_secs(5), pool.acquire()).await;
     assert!(second.unwrap().is_ok());
 }
 
 #[tokio::test]
-async fn a_released_connection_is_used_again() {
+async fn each_lease_is_a_new_session() {
     let pool = pool(1);
-    let lease = pool.acquire().await.unwrap();
-    lease
+    let first = lease(&pool).await;
+    first
         .connection()
-        .execute_batch("CREATE TEMP TABLE mine (x INT)")
+        .execute_batch("CREATE TABLE t (x INT); CREATE TEMP TABLE mine (x INT); BEGIN; INSERT INTO t VALUES (1);")
         .unwrap();
-    lease.release();
-    let lease = pool.acquire().await.unwrap();
-    lease
-        .connection()
-        .execute_batch("SELECT * FROM mine")
-        .unwrap();
-}
-
-#[tokio::test]
-async fn release_rolls_back_an_open_transaction() {
-    let pool = pool(1);
-    let lease = pool.acquire().await.unwrap();
-    lease
-        .connection()
-        .execute_batch("CREATE TABLE t (x INT); BEGIN; INSERT INTO t VALUES (1);")
-        .unwrap();
-    lease.release();
-    assert_eq!(pool.idle(), 1);
-    let lease = pool.acquire().await.unwrap();
-    let n: i64 = lease
+    drop(first);
+    let second = lease(&pool).await;
+    assert_eq!(
+        class_of(second.connection().execute_batch("SELECT * FROM mine")),
+        "Catalog"
+    );
+    let n: i64 = second
         .connection()
         .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(n, 0);
-    lease.connection().execute_batch("BEGIN; COMMIT;").unwrap();
+    assert_eq!(n, 0, "a dropped lease rolls back its transaction");
 }
 
 #[tokio::test]
-async fn a_dropped_lease_drops_its_connection_and_frees_the_permit() {
-    let pool = pool(1);
-    drop(pool.acquire().await.unwrap());
-    assert!(pool.is_quiet());
-    assert_eq!(pool.idle(), 0);
-    assert!(pool.acquire().await.is_ok());
-}
-
-#[tokio::test]
-async fn close_refuses_leases_and_drops_idle_connections() {
+async fn close_refuses_new_permits() {
     let pool = pool(2);
-    let kept = pool.acquire().await.unwrap();
-    pool.acquire().await.unwrap().release();
-    assert_eq!(pool.idle(), 1);
+    let kept = lease(&pool).await;
     pool.close();
-    assert_eq!(pool.idle(), 0);
     assert!(matches!(
         pool.acquire().await,
         Err(DuckDbError::ShuttingDown)
     ));
-    kept.release();
-    assert_eq!(pool.idle(), 0);
+    assert!(!pool.is_quiet());
+    drop(kept);
     assert!(pool.is_quiet());
+}
+
+#[test]
+fn ping_uses_the_root_connection() {
+    let pool = pool(1);
+    pool.ping().unwrap();
 }
 
 #[test]
@@ -272,4 +259,27 @@ fn checkpoint_runs_on_a_file() {
     config.path = dir.path().join("c.duckdb").to_str().unwrap().to_owned();
     let pool = Pool::new(open(&config, &[]).unwrap(), 1);
     pool.checkpoint().unwrap();
+}
+
+#[test]
+fn allowed_directories_are_quoted_and_joined() {
+    let first = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let second = parent.path().join("it's");
+    std::fs::create_dir(&second).unwrap();
+    let mut config = DuckDbConfig::default();
+    config.allowed_directories = vec![
+        format!("{}/", first.path().display()),
+        format!("{}/", second.display()),
+    ];
+    let conn = open(&config, &[]).unwrap();
+    read_csv(&conn, &csv(first.path(), "a.csv")).unwrap();
+    read_csv(&conn, &csv(&second, "b.csv")).unwrap();
+}
+
+#[test]
+fn setup_hooks_run_before_the_lock() {
+    let set: Setup = Arc::new(|conn: &Connection| conn.execute_batch("SET default_order = 'desc'"));
+    let conn = open(&DuckDbConfig::default(), &[set]).unwrap();
+    assert_eq!(setting(&conn, "default_order"), "DESC");
 }

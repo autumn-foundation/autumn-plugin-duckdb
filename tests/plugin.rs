@@ -139,15 +139,48 @@ async fn a_failed_setup_hook_stops_the_boot() {
 }
 
 #[tokio::test]
-async fn the_shutdown_mark_stops_new_calls() {
+async fn calls_work_during_the_request_drain() {
+    // Autumn marks the shutdown first. Then it drains the requests. Then it runs the shutdown hooks.
     let client = app(plugin());
     client.state().begin_shutdown_for_test();
-    let db = DuckDb::from_state(client.state()).unwrap();
-    for _ in 0..200 {
-        if db.query("SELECT 1").fetch().await == Err(DuckDbError::ShuttingDown) {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    panic!("the shutdown watch did not stop new calls");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    client.get("/items").send().await.assert_ok();
+}
+
+#[tokio::test]
+async fn a_standalone_handle_can_shut_down() {
+    let db = DuckDb::open(DuckDbConfig::default()).await.unwrap();
+    let row = db.query("SELECT 1 AS one").fetch_one().await.unwrap();
+    assert_eq!(row.columns(), ["one"]);
+    db.shutdown().await;
+    assert_eq!(
+        db.query("SELECT 1").fetch_one().await.unwrap_err(),
+        DuckDbError::ShuttingDown
+    );
+}
+
+/// Builds the app and gives the text of the startup panic.
+fn boot_panic(plugin: DuckDbPlugin) -> String {
+    let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app(plugin)))
+    else {
+        return "the boot did not fail".to_owned();
+    };
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_boot_error_names_the_key_or_the_class_only() {
+    let text = boot_panic(DuckDbPlugin::new().configure(|c| c.max_connections = 0));
+    assert!(text.contains("max_connections"), "{text}");
+    let text = boot_panic(
+        DuckDbPlugin::new()
+            .config(DuckDbConfig::default())
+            .setup(|conn| conn.execute_batch("SELECT * FROM secret_table_name")),
+    );
+    assert!(text.contains("Catalog"), "{text}");
+    assert!(!text.contains("secret_table_name"), "{text}");
 }

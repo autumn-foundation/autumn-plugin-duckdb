@@ -36,7 +36,7 @@ impl Unit {
     }
 }
 
-/// Gives the date text for `days` from `1970-01-01`.
+/// Returns the date text for `days` from `1970-01-01`.
 pub(crate) fn date_text(days: i32) -> String {
     match days {
         i32::MAX => "infinity".to_owned(),
@@ -45,13 +45,13 @@ pub(crate) fn date_text(days: i32) -> String {
     }
 }
 
-/// Gives the time text for `value` units from midnight.
+/// Returns the time text for `value` units from midnight.
 pub(crate) fn time_text(unit: Unit, value: i64) -> String {
     let (seconds, nanos) = split(unit, value);
     clock_text(seconds, nanos)
 }
 
-/// Gives the timestamp text for `value` units from the Unix epoch.
+/// Returns the timestamp text for `value` units from the Unix epoch.
 pub(crate) fn timestamp_text(unit: Unit, value: i64) -> String {
     match value {
         i64::MAX => "infinity".to_owned(),
@@ -78,7 +78,7 @@ fn split(unit: Unit, value: i64) -> (i128, u32) {
     )
 }
 
-/// Gives `HH:MM:SS` and a fraction without trailing zeros.
+/// Returns `HH:MM:SS` and a fraction without trailing zeros.
 fn clock_text(seconds: i128, nanos: u32) -> String {
     let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
     let mut text = format!("{h:02}:{m:02}:{s:02}");
@@ -90,7 +90,7 @@ fn clock_text(seconds: i128, nanos: u32) -> String {
     text
 }
 
-/// Gives the Gregorian date text for `days` from `1970-01-01`.
+/// Returns the Gregorian date text for `days` from `1970-01-01`.
 ///
 /// The algorithm is `civil_from_days` by Howard Hinnant.
 fn civil_text(days: i64) -> String {

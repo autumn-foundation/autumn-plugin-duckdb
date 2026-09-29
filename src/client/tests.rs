@@ -52,6 +52,28 @@ fn counter(db: &DuckDb, name: &str, outcome: Option<&str>) -> f64 {
         .value
 }
 
+/// Holds the only connection until the test sends on the sender. An interrupt does not stop it.
+async fn hold(
+    db: &DuckDb,
+) -> (
+    tokio::task::JoinHandle<Result<(), DuckDbError>>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let busy = db.clone();
+    let holder = tokio::spawn(async move {
+        busy.with_connection(move |_| {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+            Ok(())
+        })
+        .await
+    });
+    entered_rx.await.unwrap();
+    (holder, release_tx)
+}
+
 #[derive(Debug, Deserialize, PartialEq)]
 struct Item {
     id: i64,
@@ -209,6 +231,77 @@ async fn more_than_one_statement_is_refused_before_it_runs() {
 }
 
 #[tokio::test]
+async fn lexer_tricks_do_not_run_a_second_statement() {
+    let db = db().await;
+    for sql in [
+        "SELECT 1 --\r; CREATE TABLE marker (i INT); SELECT 2",
+        "SELECT 1 AS a$x$; CREATE TABLE marker (i INT); SELECT 1 AS b$x$",
+        "SELECT $é$'$é$; CREATE TABLE marker (i INT); SELECT '1'",
+    ] {
+        let err = db.query(sql).execute().await.unwrap_err();
+        assert!(
+            matches!(err, DuckDbError::MultipleStatements { .. }),
+            "{sql}: {err:?}"
+        );
+    }
+    let err = db
+        .query("SELECT 'open; CREATE TABLE marker (i INT)")
+        .execute()
+        .await
+        .unwrap_err();
+    assert_eq!(err, DuckDbError::OpenLiteral);
+    let tables: i64 = db
+        .query("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'marker'")
+        .fetch_one_as()
+        .await
+        .unwrap();
+    assert_eq!(tables, 0);
+}
+
+#[tokio::test]
+async fn session_state_never_reaches_the_next_call() {
+    let db = db_with(|c| c.max_connections = 1).await;
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TABLE t AS SELECT 'main' AS v;
+             CREATE SCHEMA other;
+             CREATE TABLE other.t AS SELECT 'other' AS v;",
+        )
+    })
+    .await
+    .unwrap();
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TEMP TABLE secret AS SELECT 42 AS n;
+             SET VARIABLE v = 7;
+             PREPARE p AS SELECT 99;
+             USE memory.other;
+             BEGIN;
+             INSERT INTO main.t VALUES ('open');",
+        )
+    })
+    .await
+    .unwrap();
+    let v: String = db.query("SELECT v FROM t").fetch_one_as().await.unwrap();
+    assert_eq!(v, "main");
+    let err = db.query("SELECT * FROM secret").fetch().await.unwrap_err();
+    assert_eq!(err.class(), Some("Catalog"));
+    let variable: Option<i64> = db
+        .query("SELECT getvariable('v')")
+        .fetch_one_as()
+        .await
+        .unwrap();
+    assert_eq!(variable, None);
+    assert!(db.query("EXECUTE p").fetch().await.is_err());
+    let rows: i64 = db
+        .query("SELECT count(*) FROM t")
+        .fetch_one_as()
+        .await
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
+#[tokio::test]
 async fn a_wrong_parameter_count_is_refused() {
     let db = db().await;
     let err = db.query("SELECT ?, ?").bind(1).fetch().await.unwrap_err();
@@ -255,14 +348,91 @@ async fn the_row_limit_gives_an_error() {
 
 #[tokio::test]
 async fn the_byte_limit_gives_an_error() {
-    let db = db_with(|c| c.max_result_bytes = 10).await;
+    // A text value counts 16 bytes and its text.
+    let db = db_with(|c| c.max_result_bytes = 26).await;
     db.query("SELECT repeat('x', 10)").fetch().await.unwrap();
     let err = db
         .query("SELECT repeat('x', 11)")
         .fetch_optional()
         .await
         .unwrap_err();
-    assert_eq!(err, DuckDbError::ResultTooLarge { limit_bytes: 10 });
+    assert_eq!(err, DuckDbError::ResultTooLarge { limit_bytes: 26 });
+}
+
+#[tokio::test]
+async fn a_query_can_override_the_row_limit_and_the_timeout() {
+    let db = db_with(|c| c.max_rows = 2).await;
+    let rows = db.query("SELECT * FROM range(5)").max_rows(5).fetch().await;
+    assert_eq!(rows.unwrap().len(), 5);
+    let err = db
+        .query("SELECT * FROM range(5)")
+        .max_rows(4)
+        .fetch()
+        .await
+        .unwrap_err();
+    assert_eq!(err, DuckDbError::TooManyRows { limit: 4 });
+    let err = db
+        .query(SLOW)
+        .timeout(Duration::from_millis(50))
+        .fetch()
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        DuckDbError::Timeout {
+            timeout: Duration::from_millis(50)
+        }
+    );
+    wait_quiet(&db).await;
+}
+
+#[tokio::test]
+async fn a_huge_query_timeout_is_capped_at_one_day() {
+    let db = db().await;
+    let rows = db
+        .query("SELECT 1")
+        .timeout(Duration::MAX)
+        .fetch()
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
+#[tokio::test]
+async fn the_byte_limit_counts_all_rows() {
+    let db = db_with(|c| c.max_result_bytes = 40).await;
+    db.query("SELECT 'xx' FROM range(2)").fetch().await.unwrap();
+    let err = db
+        .query("SELECT 'xx' FROM range(3)")
+        .fetch()
+        .await
+        .unwrap_err();
+    assert_eq!(err, DuckDbError::ResultTooLarge { limit_bytes: 40 });
+}
+
+#[tokio::test]
+async fn the_byte_limit_counts_empty_items() {
+    let db = db_with(|c| c.max_result_bytes = 1000).await;
+    let err = db
+        .query("SELECT list_transform(range(100000), x -> '') AS l")
+        .fetch()
+        .await
+        .unwrap_err();
+    assert_eq!(err, DuckDbError::ResultTooLarge { limit_bytes: 1000 });
+}
+
+#[test]
+fn reading_rows_stops_after_a_cancel() {
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    let limits = Limits {
+        take: usize::MAX,
+        max_rows: usize::MAX,
+        max_bytes: usize::MAX,
+    };
+    let err = read_rows(&conn, "SELECT * FROM range(10)", &[], limits, &|| true).unwrap_err();
+    assert_eq!(err, DuckDbError::Cancelled);
+    let rows = read_rows(&conn, "SELECT * FROM range(10)", &[], limits, &|| false).unwrap();
+    assert_eq!(rows.len(), 10);
 }
 
 #[tokio::test]
@@ -287,12 +457,10 @@ async fn a_timeout_interrupts_the_query() {
 
 #[tokio::test]
 async fn an_interrupt_never_reaches_the_next_call() {
-    let db = db_with(|c| {
-        c.timeout_ms = 100;
-        c.max_connections = 1;
-    })
-    .await;
-    assert!(db.query(SLOW).fetch().await.is_err());
+    let db = db_with(|c| c.max_connections = 1).await;
+    let dropped = tokio::time::timeout(Duration::from_millis(100), db.query(SLOW).fetch()).await;
+    assert!(dropped.is_err(), "the slow query must still run");
+    wait_quiet(&db).await;
     for _ in 0..50 {
         db.query("SELECT 1").fetch().await.unwrap();
     }
@@ -315,24 +483,22 @@ async fn an_interrupt_before_the_query_starts_repeats() {
 
 #[tokio::test]
 async fn the_wait_for_a_connection_counts_in_the_timeout() {
-    let db = db_with(|c| {
-        c.timeout_ms = 300;
-        c.max_connections = 1;
-    })
-    .await;
-    let busy = db.clone();
-    // An interrupt does not stop a sleep. The lease stays out for one second.
-    let slow = tokio::spawn(async move {
-        busy.with_connection(|_| {
-            std::thread::sleep(Duration::from_secs(1));
-            Ok(())
-        })
+    let db = db_with(|c| c.max_connections = 1).await;
+    let (holder, release) = hold(&db).await;
+    let err = db
+        .query("SELECT 1")
+        .timeout(Duration::from_millis(300))
+        .fetch()
         .await
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let err = db.query("SELECT 1").fetch().await.unwrap_err();
-    assert!(matches!(err, DuckDbError::Timeout { .. }), "{err:?}");
-    assert!(slow.await.unwrap().is_err());
+        .unwrap_err();
+    assert_eq!(
+        err,
+        DuckDbError::Timeout {
+            timeout: Duration::from_millis(300)
+        }
+    );
+    release.send(()).unwrap();
+    let _ = holder.await.unwrap();
     wait_quiet(&db).await;
 }
 
@@ -493,22 +659,11 @@ fn outcomes_follow_the_result() {
 #[tokio::test]
 async fn ping_works_when_each_connection_is_busy() {
     let db = db_with(|c| c.max_connections = 1).await;
-    let busy = db.clone();
-    let slow = tokio::spawn(async move {
-        busy.with_connection(|_| {
-            std::thread::sleep(Duration::from_millis(500));
-            Ok(())
-        })
-        .await
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let start = Instant::now();
-    db.ping().await.unwrap();
-    assert!(
-        start.elapsed() < Duration::from_millis(400),
-        "the ping waited for the pool"
-    );
-    slow.await.unwrap().unwrap();
+    let (holder, release) = hold(&db).await;
+    let ping = tokio::time::timeout(Duration::from_secs(5), db.ping()).await;
+    release.send(()).unwrap();
+    ping.expect("the ping waited for the pool").unwrap();
+    holder.await.unwrap().unwrap();
 }
 
 #[test]
@@ -530,4 +685,158 @@ fn a_timed_out_query_stops_when_the_runtime_stops() {
     receiver
         .recv_timeout(Duration::from_secs(10))
         .expect("the runtime did not stop: the query still runs");
+}
+
+#[tokio::test]
+async fn timestamps_with_a_time_zone_end_with_z() {
+    let db = db().await;
+    let row = db
+        .query(
+            "SELECT TIMESTAMPTZ '2024-01-01 12:00:00+05' AS tz,
+                    [TIMESTAMPTZ '2024-01-01 12:00:00+05'] AS list,
+                    TIMESTAMP '2024-01-01 12:00:00' AS plain",
+        )
+        .fetch_optional()
+        .await
+        .unwrap()
+        .unwrap();
+    let tz = Value::Timestamp("2024-01-01T07:00:00Z".into());
+    assert_eq!(row.get("tz"), Some(&tz));
+    assert_eq!(row.get("list"), Some(&Value::List(vec![tz])));
+    assert_eq!(
+        row.get("plain"),
+        Some(&Value::Timestamp("2024-01-01T12:00:00".into()))
+    );
+}
+
+#[tokio::test]
+async fn nested_128_bit_and_decimal_values_keep_their_type() {
+    let db = db().await;
+    let row = db
+        .query(
+            "SELECT [340282366920938463463374607431768211455::UHUGEINT] AS big,
+                    [5::DECIMAL(38,0)] AS whole,
+                    {'d': -0.05::DECIMAL(10,2)} AS s,
+                    MAP {1.5::DECIMAL(4,1): 2} AS m",
+        )
+        .fetch_optional()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.get("big"),
+        Some(&Value::List(vec![Value::UHugeInt(u128::MAX)]))
+    );
+    assert_eq!(
+        row.get("whole"),
+        Some(&Value::List(vec![Value::Decimal("5".into())]))
+    );
+    assert_eq!(
+        row.get("s"),
+        Some(&Value::Struct(vec![(
+            "d".into(),
+            Value::Decimal("-0.05".into())
+        )]))
+    );
+    assert_eq!(
+        row.get("m"),
+        Some(&Value::Map(vec![(
+            Value::Decimal("1.5".into()),
+            Value::Int(2)
+        )]))
+    );
+}
+
+#[tokio::test]
+async fn types_that_lose_data_are_refused() {
+    let db = db().await;
+    for (sql, type_name) in [
+        ("SELECT '10:00'::TIME_NS AS c", "TIME_NS"),
+        ("SELECT TIMETZ '12:00:00+05' AS c", "TIMETZ"),
+        ("SELECT '101'::BIT AS c", "BIT"),
+        (
+            "SELECT 12345678901234567890123456789012345678901::BIGNUM AS c",
+            "BIGNUM",
+        ),
+        ("SELECT ['10:00'::TIME_NS] AS c", "TIME_NS"),
+        ("SELECT {'a': TIMETZ '12:00:00+05'} AS c", "TIMETZ"),
+    ] {
+        let err = db.query(sql).fetch().await.unwrap_err();
+        assert_eq!(
+            err,
+            DuckDbError::UnsupportedType {
+                column: "c".into(),
+                type_name: type_name.into()
+            },
+            "{sql}"
+        );
+    }
+    let rows = db
+        .query("SELECT CAST(TIMETZ '12:00:00+05' AS VARCHAR) AS c")
+        .fetch()
+        .await
+        .unwrap();
+    assert_eq!(rows[0].get("c"), Some(&Value::Text("12:00:00+05".into())));
+}
+
+#[tokio::test]
+async fn fetch_optional_reads_one_row_only() {
+    let db = db_with(|c| c.max_rows = 1).await;
+    let row = db.query("SELECT * FROM range(5)").fetch_optional().await;
+    assert!(row.unwrap().is_some());
+    assert_eq!(counter(&db, "duckdb_rows_returned_total", None), 1.0);
+}
+
+#[tokio::test]
+async fn the_statement_check_needs_no_connection() {
+    let db = db_with(|c| c.max_connections = 1).await;
+    let (holder, release) = hold(&db).await;
+    let started = counter(&db, "duckdb_calls_started_total", None);
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        db.query("SELECT 1; SELECT 2").fetch(),
+    )
+    .await
+    .expect("the check must not wait for a connection")
+    .unwrap_err();
+    assert!(
+        matches!(err, DuckDbError::MultipleStatements { .. }),
+        "{err:?}"
+    );
+    assert_eq!(counter(&db, "duckdb_calls_started_total", None), started);
+    release.send(()).unwrap();
+    holder.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_call_after_shutdown_is_not_counted() {
+    let db = db().await;
+    db.shutdown().await;
+    assert!(db.query("SELECT 1").fetch().await.is_err());
+    assert_eq!(counter(&db, "duckdb_calls_started_total", None), 0.0);
+}
+
+#[tokio::test]
+async fn a_real_write_conflict_is_retryable() {
+    let db = db().await;
+    db.query("CREATE TABLE c (id INT PRIMARY KEY, n INT)")
+        .execute()
+        .await
+        .unwrap();
+    db.query("INSERT INTO c VALUES (1, 0)")
+        .execute()
+        .await
+        .unwrap();
+    let err = db
+        .with_connection(|conn| {
+            let other = conn.try_clone()?;
+            conn.execute_batch("BEGIN; UPDATE c SET n = 1 WHERE id = 1;")?;
+            other.execute_batch("BEGIN; UPDATE c SET n = 2 WHERE id = 1;")?;
+            conn.execute_batch("COMMIT")
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), Some("TransactionContext"), "{err:?}");
+    assert!(err.is_retryable());
+    assert_eq!(err.status(), http::StatusCode::SERVICE_UNAVAILABLE);
 }

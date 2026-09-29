@@ -2,15 +2,19 @@
 //!
 //! # Contract
 //!
-//! - Each call runs on a blocking thread with one pooled connection.
-//! - Each call has a deadline: `timeout_ms` from the call start. The wait for a connection counts.
-//! - At the deadline, the call gives [`DuckDbError::Timeout`] at once. The plugin interrupts the query.
+//! A call is one query or one `with_connection` closure.
+//!
+//! - Each call runs on a blocking thread with a new connection. See [`crate::pool`].
+//! - Each call has a deadline: the timeout from the call start. The wait for a connection counts.
+//! - At the deadline, the call returns [`DuckDbError::Timeout`] immediately. The plugin interrupts the query.
 //! - A dropped call future interrupts its query.
 //! - An interrupt repeats until the call ends, because DuckDB ignores an interrupt before a query starts.
-//!   An interrupt never reaches the next call on the same connection.
+//!   No interrupt comes after the call ends.
 //! - A query refuses SQL with more than one statement before it uses a connection.
 //! - A query refuses a parameter count that is not the placeholder count.
-//! - A fetch gives an error, not a partial result, above `max_rows` or `max_result_bytes`.
+//! - A fetch refuses a column type that loses data. See [`crate::value::shape_of`].
+//! - A fetch returns an error, not a partial result, above the row limit or `max_result_bytes`.
+//!   DuckDB makes the full result before the plugin reads it. The limits do not limit DuckDB memory.
 //! - After [`DuckDb::shutdown`], new calls fail with [`DuckDbError::ShuttingDown`].
 //!   Open calls get an interrupt. A writable file gets a `CHECKPOINT`.
 
@@ -30,10 +34,13 @@ use crate::metrics::{Metrics, Outcome};
 use crate::param::Param;
 use crate::pool::{self, Pool, Setup};
 use crate::statement;
-use crate::value::{Row, Value};
+use crate::value::{Row, Value, shape_of};
 
 /// The pause between repeated interrupts of one call.
 const INTERRUPT_EVERY: Duration = Duration::from_millis(10);
+
+/// The largest call timeout: one day. A larger deadline can overflow.
+const MAX_TIMEOUT: Duration = Duration::from_secs(86_400);
 
 /// The longest wait at shutdown for open calls to stop before the checkpoint.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
@@ -65,8 +72,8 @@ enum Reason {
 }
 
 /// The interrupt state of one call.
+#[derive(Default)]
 struct Ticket {
-    handle: Arc<InterruptHandle>,
     state: Mutex<TicketState>,
 }
 
@@ -74,24 +81,18 @@ struct Ticket {
 struct TicketState {
     done: bool,
     reason: Option<Reason>,
+    handle: Option<Arc<InterruptHandle>>,
 }
 
 impl Ticket {
-    fn new(handle: Arc<InterruptHandle>) -> Arc<Self> {
-        Arc::new(Self {
-            handle,
-            state: Mutex::new(TicketState::default()),
-        })
-    }
-
     fn state(&self) -> std::sync::MutexGuard<'_, TicketState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Marks the call as cancelled. Interrupts it again and again until it ends.
+    /// Marks the call as cancelled. Interrupts it every 10 ms until it ends.
     ///
-    /// DuckDB ignores an interrupt before a query starts. So one interrupt is not sufficient.
-    /// The repeat runs on its own thread, because a runtime shutdown drops async tasks.
+    /// DuckDB ignores an interrupt before a query starts. The repeat uses an OS thread,
+    /// because a runtime shutdown drops async tasks.
     fn cancel(self: &Arc<Self>, reason: Reason) {
         {
             let mut state = self.state();
@@ -104,33 +105,54 @@ impl Ticket {
             return;
         }
         let ticket = Arc::clone(self);
-        std::thread::spawn(move || {
-            while ticket.interrupt() {
-                std::thread::sleep(INTERRUPT_EVERY);
-            }
-        });
+        let repeat = std::thread::Builder::new()
+            .name("duckdb-interrupt".to_owned())
+            .spawn(move || {
+                while ticket.interrupt() {
+                    std::thread::sleep(INTERRUPT_EVERY);
+                }
+            });
+        if repeat.is_err() {
+            tracing::warn!("the DuckDB plugin cannot start a thread to repeat an interrupt");
+        }
     }
 
-    /// Interrupts the query while the call runs. Gives `false` after the call ends.
+    /// Keeps the interrupt handle of the connection. Returns the cancel reason, if any.
+    fn attach(&self, handle: Arc<InterruptHandle>) -> Option<Reason> {
+        let mut state = self.state();
+        state.handle = Some(handle);
+        state.reason
+    }
+
+    /// Interrupts the query while the call runs. Returns `false` after the call ends.
     ///
     /// The lock makes sure that no interrupt comes after [`finish`](Self::finish).
     fn interrupt(&self) -> bool {
         let state = self.state();
-        if !state.done {
-            self.handle.interrupt();
+        if !state.done
+            && let Some(handle) = &state.handle
+        {
+            handle.interrupt();
         }
         !state.done
     }
 
-    /// Marks the end of the call. Gives the cancel reason.
+    /// Marks the end of the call. Returns the cancel reason.
     fn finish(&self) -> Option<Reason> {
         let mut state = self.state();
         state.done = true;
+        state.handle = None;
         state.reason
     }
+}
 
-    fn reason(&self) -> Option<Reason> {
-        self.state().reason
+/// Tells the blocking work that the plugin cancelled the call.
+struct Stop(Arc<Ticket>);
+
+impl Stop {
+    /// Returns `true` after a timeout, a drop or a shutdown.
+    fn requested(&self) -> bool {
+        self.0.state().reason.is_some()
     }
 }
 
@@ -201,6 +223,7 @@ impl DuckDb {
     /// # Errors
     ///
     /// Returns [`DuckDbError::Config`] for a bad configuration, or the DuckDB error of the open.
+    /// Returns [`DuckDbError::TaskFailed`] if the blocking open task stops.
     pub async fn open(config: DuckDbConfig) -> Result<Self, DuckDbError> {
         Self::open_with(config, Vec::new(), Arc::default()).await
     }
@@ -230,30 +253,43 @@ impl DuckDb {
         })
     }
 
-    /// Starts a query. Bind values with [`DuckDbQuery::bind`].
+    /// Makes a query for `sql`. Bind values with [`DuckDbQuery::bind`].
+    /// Then run it with `execute` or a fetch method.
     pub fn query(&self, sql: impl Into<String>) -> DuckDbQuery {
         DuckDbQuery {
             db: self.clone(),
             sql: sql.into(),
             params: Vec::new(),
+            timeout: None,
+            max_rows: None,
         }
     }
 
-    /// Runs `work` on a pooled connection, on a blocking thread.
+    /// Runs `work` on a new connection, on a blocking thread.
     ///
     /// Use it for the full `duckdb` API, for example a transaction or an appender.
-    /// The timeout applies. The plugin rolls back a transaction that `work` leaves open.
+    /// DuckDB rolls back a transaction that `work` leaves open.
+    /// The row limit and the byte limit do not apply.
+    ///
+    /// At the timeout, the call returns. `work` continues until DuckDB stops its query.
+    /// Rust code in `work` does not stop.
+    ///
+    /// To return an app error, return `Ok(Err(app_error))` from `work`.
     ///
     /// # Errors
     ///
-    /// Returns the error of `work`, [`DuckDbError::Timeout`], or [`DuckDbError::TaskFailed`] if `work` panics.
+    /// Returns the error of `work` as [`DuckDbError::Database`], or another [`DuckDbError`].
+    /// For example: `Timeout`, `ShuttingDown`, or `TaskFailed` if `work` panics.
     pub async fn with_connection<T, F>(&self, work: F) -> Result<T, DuckDbError>
     where
         T: Send + 'static,
         F: FnOnce(&Connection) -> duckdb::Result<T> + Send + 'static,
     {
-        self.call(true, move |conn| work(conn).map_err(DuckDbError::from))
-            .await
+        let timeout = self.inner.config.timeout();
+        self.call(true, timeout, move |conn, _| {
+            work(conn).map_err(DuckDbError::from)
+        })
+        .await
     }
 
     /// The configuration.
@@ -277,8 +313,9 @@ impl DuckDb {
 
     /// Refuses new calls, interrupts open calls and runs `CHECKPOINT` on a writable file.
     ///
+    /// The plugin calls it in the Autumn shutdown hook. Call it for a handle from [`DuckDb::open`].
     /// A second call waits for the first one to end.
-    pub(crate) async fn shutdown(&self) {
+    pub async fn shutdown(&self) {
         self.inner
             .shutdown_done
             .get_or_init(|| async {
@@ -321,54 +358,58 @@ impl DuckDb {
     }
 
     /// Runs `work` with a connection, a deadline and an interrupt ticket.
-    async fn call<T, F>(&self, counted: bool, work: F) -> Result<T, DuckDbError>
+    async fn call<T, F>(&self, counted: bool, timeout: Duration, work: F) -> Result<T, DuckDbError>
     where
         T: Send + 'static,
-        F: FnOnce(&Connection) -> Result<T, DuckDbError> + Send + 'static,
+        F: FnOnce(&Connection, &Stop) -> Result<T, DuckDbError> + Send + 'static,
     {
         let inner = &*self.inner;
         if inner.shutting_down.load(Ordering::Acquire) {
             return Err(DuckDbError::ShuttingDown);
         }
         let mut guard = Guard::new(inner, counted);
-        let result = self.run(&mut guard, work).await;
+        let result = self.run(&mut guard, timeout, work).await;
         guard.outcome = Some(outcome(&result));
         result
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the lease moves into the blocking task"
-    )]
-    async fn run<T, F>(&self, guard: &mut Guard<'_>, work: F) -> Result<T, DuckDbError>
+    async fn run<T, F>(
+        &self,
+        guard: &mut Guard<'_>,
+        timeout: Duration,
+        work: F,
+    ) -> Result<T, DuckDbError>
     where
         T: Send + 'static,
-        F: FnOnce(&Connection) -> Result<T, DuckDbError> + Send + 'static,
+        F: FnOnce(&Connection, &Stop) -> Result<T, DuckDbError> + Send + 'static,
     {
         let inner = &*self.inner;
-        let timeout = inner.config.timeout();
         let deadline = Instant::now() + timeout;
-        let lease = tokio::time::timeout_at(deadline, inner.pool.acquire())
+        let permit = tokio::time::timeout_at(deadline, inner.pool.acquire())
             .await
             .map_err(|_| DuckDbError::Timeout { timeout })??;
-        let ticket = Ticket::new(lease.connection().interrupt_handle());
+        let ticket = Arc::new(Ticket::default());
         guard.track(Arc::clone(&ticket));
         // A shutdown can start after the first check and before `track`.
         if inner.shutting_down.load(Ordering::Acquire) {
             ticket.cancel(Reason::Shutdown);
         }
-        let blocking = Arc::clone(&ticket);
+        // `Finish` ends the ticket also if the closure never runs.
+        let finish = Finish(Arc::clone(&ticket));
         let task = tokio::task::spawn_blocking(move || {
-            let lease = lease;
-            // `finish` drops before `lease`, also in a panic. No interrupt reaches the next call.
-            let finish = Finish(blocking);
-            let result = match finish.0.reason() {
+            let lease = match permit.connect() {
+                Ok(lease) => lease,
+                Err(err) => return (Err(err), finish.0.finish()),
+            };
+            // `finish` drops before `lease`, also in a panic. No interrupt reaches a closed connection.
+            let finish = finish;
+            let result = match finish.0.attach(lease.connection().interrupt_handle()) {
                 Some(_) => Err(DuckDbError::Cancelled),
-                None => work(lease.connection()),
+                None => work(lease.connection(), &Stop(Arc::clone(&finish.0))),
             };
             let reason = finish.0.finish();
             drop(finish);
-            lease.release();
+            drop(lease);
             (result, reason)
         });
         match tokio::time::timeout_at(deadline, task).await {
@@ -398,24 +439,43 @@ pub struct DuckDbQuery {
     db: DuckDb,
     sql: String,
     params: Vec<Param>,
+    timeout: Option<Duration>,
+    max_rows: Option<usize>,
 }
 
 impl DuckDbQuery {
+    /// Sets the timeout of this query. It replaces `timeout_ms`. The largest timeout is one day.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout.min(MAX_TIMEOUT));
+        self
+    }
+
+    /// Sets the row limit of this query. It replaces `max_rows`.
+    pub const fn max_rows(mut self, max_rows: usize) -> Self {
+        self.max_rows = Some(max_rows);
+        self
+    }
+
     /// Binds the next `?` or `$n` parameter.
     pub fn bind(mut self, value: impl Into<Param>) -> Self {
         self.params.push(value.into());
         self
     }
 
-    /// Runs the statement and gives the changed row count.
+    /// Runs the query and gives the changed row count.
+    ///
+    /// `INSERT ... RETURNING`, `CREATE TABLE ... AS` and `SELECT` give 0.
     ///
     /// # Errors
     ///
-    /// Returns [`DuckDbError`] if the statement fails or a limit applies.
+    /// Returns [`DuckDbError`] if the query fails or times out.
     pub async fn execute(self) -> Result<usize, DuckDbError> {
         check_statements(&self.sql)?;
-        let Self { db, sql, params } = self;
-        db.call(true, move |conn| {
+        let timeout = self.call_timeout();
+        let Self {
+            db, sql, params, ..
+        } = self;
+        db.call(true, timeout, move |conn, _| {
             let mut stmt = prepare(conn, &sql, params.len())?;
             Ok(stmt.execute(params_from_iter(params.iter()))?)
         })
@@ -443,6 +503,8 @@ impl DuckDbQuery {
 
     /// Runs the query and gives the first row, if any. The plugin reads no more rows.
     ///
+    /// DuckDB still makes the full result. Add `LIMIT 1` to a query with a large result.
+    ///
     /// # Errors
     ///
     /// Returns [`DuckDbError`] if the query fails or a limit applies.
@@ -462,6 +524,15 @@ impl DuckDbQuery {
         }
     }
 
+    /// Runs the query and gives the first row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DuckDbError::NotFound`] if there is no row, or another [`DuckDbError`].
+    pub async fn fetch_one(self) -> Result<Row, DuckDbError> {
+        self.fetch_optional().await?.ok_or(DuckDbError::NotFound)
+    }
+
     /// Runs the query and decodes the first row into `T`.
     ///
     /// # Errors
@@ -471,43 +542,29 @@ impl DuckDbQuery {
         self.fetch_optional_as().await?.ok_or(DuckDbError::NotFound)
     }
 
+    /// The timeout of this query.
+    fn call_timeout(&self) -> Duration {
+        self.timeout
+            .unwrap_or_else(|| self.db.inner.config.timeout())
+    }
+
     /// Reads up to `take` rows, in the row and byte limits.
     async fn rows(self, take: usize) -> Result<Vec<Row>, DuckDbError> {
         check_statements(&self.sql)?;
-        let Self { db, sql, params } = self;
-        let max_rows = db.inner.config.max_rows;
+        let timeout = self.call_timeout();
+        let max_rows = self.max_rows.unwrap_or(self.db.inner.config.max_rows);
+        let Self {
+            db, sql, params, ..
+        } = self;
         let max_bytes = db.inner.config.max_result_bytes;
+        let limits = Limits {
+            take,
+            max_rows,
+            max_bytes,
+        };
         let rows = db
-            .call(true, move |conn| {
-                let mut stmt = prepare(conn, &sql, params.len())?;
-                let mut rows = stmt.query(params_from_iter(params.iter()))?;
-                let columns: Arc<[String]> = rows
-                    .as_ref()
-                    .map(Statement::column_names)
-                    .unwrap_or_default()
-                    .into();
-                let mut out = Vec::new();
-                let mut bytes = 0_usize;
-                while out.len() < take {
-                    let Some(row) = rows.next()? else {
-                        break;
-                    };
-                    if out.len() == max_rows {
-                        return Err(DuckDbError::TooManyRows { limit: max_rows });
-                    }
-                    let values = (0..columns.len())
-                        .map(|index| row.get::<_, duckdb::types::Value>(index).map(Value::from))
-                        .collect::<duckdb::Result<Vec<_>>>()?;
-                    let row = Row::new(Arc::clone(&columns), values);
-                    bytes = bytes.saturating_add(row.size());
-                    if bytes > max_bytes {
-                        return Err(DuckDbError::ResultTooLarge {
-                            limit_bytes: max_bytes,
-                        });
-                    }
-                    out.push(row);
-                }
-                Ok(out)
+            .call(true, timeout, move |conn, stop| {
+                read_rows(conn, &sql, &params, limits, &|| stop.requested())
             })
             .await?;
         db.inner.metrics.rows(rows.len());
@@ -529,11 +586,88 @@ impl std::fmt::Debug for DuckDbQuery {
     }
 }
 
+/// The row limits of one fetch.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Limits {
+    /// The rows to read. The fetch stops after them.
+    pub(crate) take: usize,
+    /// More rows give an error.
+    pub(crate) max_rows: usize,
+    /// More bytes give an error.
+    pub(crate) max_bytes: usize,
+}
+
+/// Runs a query and reads its rows in the limits.
+pub(crate) fn read_rows(
+    conn: &Connection,
+    sql: &str,
+    params: &[Param],
+    limits: Limits,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<Row>, DuckDbError> {
+    let mut stmt = prepare(conn, sql, params.len())?;
+    let mut rows = stmt.query(params_from_iter(params.iter()))?;
+    let columns: Arc<[String]> = rows
+        .as_ref()
+        .map(Statement::column_names)
+        .unwrap_or_default()
+        .into();
+    // Check the types before the first row: `duckdb-rs` panics on some of them.
+    let shapes = match rows.as_ref() {
+        Some(stmt) => columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| {
+                shape_of(&stmt.column_logical_type(index)).map_err(|type_name| {
+                    DuckDbError::UnsupportedType {
+                        column: column.clone(),
+                        type_name: type_name.to_owned(),
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        None => Vec::new(),
+    };
+    let mut out = Vec::new();
+    let mut bytes = 0_usize;
+    while out.len() < limits.take {
+        if stop() {
+            return Err(DuckDbError::Cancelled);
+        }
+        let Some(row) = rows.next()? else {
+            break;
+        };
+        if out.len() == limits.max_rows {
+            return Err(DuckDbError::TooManyRows {
+                limit: limits.max_rows,
+            });
+        }
+        let values = shapes
+            .iter()
+            .enumerate()
+            .map(|(index, shape)| {
+                row.get::<_, duckdb::types::Value>(index)
+                    .map(|raw| Value::from_shaped(raw, shape))
+            })
+            .collect::<duckdb::Result<Vec<_>>>()?;
+        let row = Row::new(Arc::clone(&columns), values);
+        bytes = bytes.saturating_add(row.size());
+        if bytes > limits.max_bytes {
+            return Err(DuckDbError::ResultTooLarge {
+                limit_bytes: limits.max_bytes,
+            });
+        }
+        out.push(row);
+    }
+    Ok(out)
+}
+
 /// Refuses SQL text with more than one statement.
 fn check_statements(sql: &str) -> Result<(), DuckDbError> {
     match statement::count(sql) {
-        statements @ 2.. => Err(DuckDbError::MultipleStatements { statements }),
-        _ => Ok(()),
+        Some(statements @ 2..) => Err(DuckDbError::MultipleStatements { statements }),
+        Some(_) => Ok(()),
+        None => Err(DuckDbError::OpenLiteral),
     }
 }
 

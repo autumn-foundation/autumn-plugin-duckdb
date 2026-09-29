@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 608619ea7f279a2016a73ef5a6c4870ac1a197dee40048b696afa85d9490e183 # shrinks to parts = [("1", ";")], trailing = false
+cc 680fdf29a96f4a6e33ac658805c01e1659e550d278abde060445ef6e0b5b4181 # shrinks to parts = [("1", ";"), ("1", "; -- x\r;")], trailing = false
