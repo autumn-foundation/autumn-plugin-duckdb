@@ -85,6 +85,7 @@ fn errors_map_to_http_status() {
         with_class("TransactionContext", "no transaction is active").status(),
         StatusCode::INTERNAL_SERVER_ERROR
     );
+    assert_eq!(DuckDbError::NotFound.status(), StatusCode::NOT_FOUND);
     assert_eq!(
         DuckDbError::Cancelled.status(),
         StatusCode::SERVICE_UNAVAILABLE

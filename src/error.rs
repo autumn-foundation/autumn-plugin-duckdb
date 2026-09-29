@@ -160,6 +160,7 @@ impl DuckDbError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::Timeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+            Self::NotFound => StatusCode::NOT_FOUND,
             Self::Cancelled | Self::ShuttingDown => StatusCode::SERVICE_UNAVAILABLE,
             Self::Database { class, .. } if class == "Constraint" => StatusCode::CONFLICT,
             _ if self.is_conflict() => StatusCode::SERVICE_UNAVAILABLE,

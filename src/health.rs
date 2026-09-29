@@ -29,7 +29,23 @@ impl DatabaseCheck {
 
 impl HealthIndicator for DatabaseCheck {
     fn check(&self) -> BoxFuture<'_, HealthCheckOutput> {
-        Box::pin(async move { HealthCheckOutput::up() })
+        Box::pin(async move {
+            let Some(db) = self.shared.handle.get() else {
+                return HealthCheckOutput::down().with_details(detail("state", "not started"));
+            };
+            let kind = if db.config().is_in_memory() {
+                "in-memory"
+            } else {
+                "file"
+            };
+            match db.ping().await {
+                Ok(()) => HealthCheckOutput::up().with_details(detail("database", kind)),
+                Err(err) => {
+                    tracing::warn!(class = err.class(), error = %err, "the DuckDB readiness check failed");
+                    HealthCheckOutput::down().with_details(detail("database", kind))
+                }
+            }
+        })
     }
 }
 
