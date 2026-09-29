@@ -54,7 +54,10 @@ fn decimals_become_exact_text() {
 
 #[test]
 fn temporal_values_become_iso_text() {
-    assert_eq!(Value::from(Raw::Date32(0)), Value::Date("1970-01-01".into()));
+    assert_eq!(
+        Value::from(Raw::Date32(0)),
+        Value::Date("1970-01-01".into())
+    );
     assert_eq!(
         Value::from(Raw::Time64(TimeUnit::Microsecond, 1_500_000)),
         Value::Time("00:00:01.5".into())
