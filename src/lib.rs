@@ -67,5 +67,4 @@ pub use duckdb;
 pub use error::{DuckDbError, DuckDbResultExt};
 pub use param::Param;
 pub use plugin::{DuckDbPlugin, PLUGIN_NAME};
-pub use pool::Setup;
 pub use value::{Row, Value};

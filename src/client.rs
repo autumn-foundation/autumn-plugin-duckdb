@@ -65,8 +65,8 @@ enum Reason {
 }
 
 /// The interrupt state of one call.
+#[derive(Default)]
 struct Ticket {
-    handle: Arc<InterruptHandle>,
     state: Mutex<TicketState>,
 }
 
@@ -74,24 +74,18 @@ struct Ticket {
 struct TicketState {
     done: bool,
     reason: Option<Reason>,
+    handle: Option<Arc<InterruptHandle>>,
 }
 
 impl Ticket {
-    fn new(handle: Arc<InterruptHandle>) -> Arc<Self> {
-        Arc::new(Self {
-            handle,
-            state: Mutex::new(TicketState::default()),
-        })
-    }
-
     fn state(&self) -> std::sync::MutexGuard<'_, TicketState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Marks the call as cancelled. Interrupts it again and again until it ends.
+    /// Marks the call as cancelled. Interrupts it every 10 ms until it ends.
     ///
-    /// DuckDB ignores an interrupt before a query starts. So one interrupt is not sufficient.
-    /// The repeat runs on its own thread, because a runtime shutdown drops async tasks.
+    /// DuckDB ignores an interrupt before a query starts. The repeat uses an OS thread,
+    /// because a runtime shutdown drops async tasks.
     fn cancel(self: &Arc<Self>, reason: Reason) {
         {
             let mut state = self.state();
@@ -104,33 +98,44 @@ impl Ticket {
             return;
         }
         let ticket = Arc::clone(self);
-        std::thread::spawn(move || {
-            while ticket.interrupt() {
-                std::thread::sleep(INTERRUPT_EVERY);
-            }
-        });
+        let repeat = std::thread::Builder::new()
+            .name("duckdb-interrupt".to_owned())
+            .spawn(move || {
+                while ticket.interrupt() {
+                    std::thread::sleep(INTERRUPT_EVERY);
+                }
+            });
+        if repeat.is_err() {
+            tracing::warn!("the DuckDB plugin cannot start a thread to repeat an interrupt");
+        }
     }
 
-    /// Interrupts the query while the call runs. Gives `false` after the call ends.
+    /// Keeps the interrupt handle of the connection. Returns the cancel reason, if any.
+    fn attach(&self, handle: Arc<InterruptHandle>) -> Option<Reason> {
+        let mut state = self.state();
+        state.handle = Some(handle);
+        state.reason
+    }
+
+    /// Interrupts the query while the call runs. Returns `false` after the call ends.
     ///
     /// The lock makes sure that no interrupt comes after [`finish`](Self::finish).
     fn interrupt(&self) -> bool {
         let state = self.state();
-        if !state.done {
-            self.handle.interrupt();
+        if !state.done
+            && let Some(handle) = &state.handle
+        {
+            handle.interrupt();
         }
         !state.done
     }
 
-    /// Marks the end of the call. Gives the cancel reason.
+    /// Marks the end of the call. Returns the cancel reason.
     fn finish(&self) -> Option<Reason> {
         let mut state = self.state();
         state.done = true;
+        state.handle = None;
         state.reason
-    }
-
-    fn reason(&self) -> Option<Reason> {
-        self.state().reason
     }
 }
 
@@ -336,10 +341,6 @@ impl DuckDb {
         result
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the lease moves into the blocking task"
-    )]
     async fn run<T, F>(&self, guard: &mut Guard<'_>, work: F) -> Result<T, DuckDbError>
     where
         T: Send + 'static,
@@ -348,27 +349,31 @@ impl DuckDb {
         let inner = &*self.inner;
         let timeout = inner.config.timeout();
         let deadline = Instant::now() + timeout;
-        let lease = tokio::time::timeout_at(deadline, inner.pool.acquire())
+        let permit = tokio::time::timeout_at(deadline, inner.pool.acquire())
             .await
             .map_err(|_| DuckDbError::Timeout { timeout })??;
-        let ticket = Ticket::new(lease.connection().interrupt_handle());
+        let ticket = Arc::new(Ticket::default());
         guard.track(Arc::clone(&ticket));
         // A shutdown can start after the first check and before `track`.
         if inner.shutting_down.load(Ordering::Acquire) {
             ticket.cancel(Reason::Shutdown);
         }
-        let blocking = Arc::clone(&ticket);
+        // `Finish` ends the ticket also if the closure never runs.
+        let finish = Finish(Arc::clone(&ticket));
         let task = tokio::task::spawn_blocking(move || {
-            let lease = lease;
-            // `finish` drops before `lease`, also in a panic. No interrupt reaches the next call.
-            let finish = Finish(blocking);
-            let result = match finish.0.reason() {
+            let lease = match permit.connect() {
+                Ok(lease) => lease,
+                Err(err) => return (Err(err), finish.0.finish()),
+            };
+            // `finish` drops before `lease`, also in a panic. No interrupt reaches a closed connection.
+            let finish = finish;
+            let result = match finish.0.attach(lease.connection().interrupt_handle()) {
                 Some(_) => Err(DuckDbError::Cancelled),
                 None => work(lease.connection()),
             };
             let reason = finish.0.finish();
             drop(finish);
-            lease.release();
+            drop(lease);
             (result, reason)
         });
         match tokio::time::timeout_at(deadline, task).await {
