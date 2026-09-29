@@ -162,6 +162,7 @@ impl Pool {
     }
 
     /// The idle connections.
+    #[cfg(test)]
     pub(crate) fn idle(&self) -> usize {
         self.idle
             .lock()

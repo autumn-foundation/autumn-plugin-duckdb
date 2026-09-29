@@ -17,7 +17,7 @@ fn an_explicit_config_declares_no_section() {
 
 #[test]
 fn resolve_applies_changes_then_validates() {
-    let source = Source::Explicit(Box::new(DuckDbConfig::default()));
+    let source = Source::Explicit(Box::default());
     let config = DuckDbPlugin::resolve(
         &source,
         vec![Box::new(|c: &mut DuckDbConfig| c.max_rows = 3)],
