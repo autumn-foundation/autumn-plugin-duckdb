@@ -1,3 +1,5 @@
+#![allow(clippy::float_cmp, reason = "the tests use exact binary fractions")]
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -229,16 +231,16 @@ fn newtypes_and_ignored_values_decode() {
 
 #[test]
 fn an_error_names_the_column_and_hides_the_value() {
-    let row = row(&[
-        ("id", Value::Int(1)),
-        ("name", text("secret@example.com")),
-        ("email", Value::Null),
-    ]);
     #[derive(Debug, Deserialize)]
     struct Wrong {
         #[allow(dead_code)]
         name: i64,
     }
+    let row = row(&[
+        ("id", Value::Int(1)),
+        ("name", text("secret@example.com")),
+        ("email", Value::Null),
+    ]);
     let err = row.decode::<Wrong>().unwrap_err();
     assert_eq!(err.column(), Some("name"));
     let message = err.to_string();

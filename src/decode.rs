@@ -11,7 +11,7 @@
 //! - Lists decode into sequences. Structs and maps decode into structs and maps.
 //! - An error names the column. An error never shows a value, because values can hold personal data.
 
-use serde::de::value::{MapDeserializer, SeqDeserializer};
+use serde::de::value::{BorrowedStrDeserializer, MapDeserializer, SeqDeserializer};
 use serde::de::{
     DeserializeSeed, Deserializer, Error as _, IntoDeserializer, MapAccess, SeqAccess, Unexpected,
     Visitor,
@@ -414,12 +414,11 @@ impl<'de> MapAccess<'de> for Columns<'de> {
         &mut self,
         seed: K,
     ) -> Result<Option<K::Value>, DecodeError> {
-        match self.row.columns().get(self.next) {
-            Some(name) => seed
-                .deserialize(serde::de::value::BorrowedStrDeserializer::new(name))
-                .map(Some),
-            None => Ok(None),
-        }
+        self.row
+            .columns()
+            .get(self.next)
+            .map(|name| seed.deserialize(BorrowedStrDeserializer::new(name)))
+            .transpose()
     }
 
     fn next_value_seed<T: DeserializeSeed<'de>>(
