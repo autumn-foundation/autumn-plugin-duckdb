@@ -74,17 +74,32 @@ fn a_row_decodes_into_a_map() {
 
 #[test]
 fn a_one_column_row_decodes_into_a_scalar() {
-    assert_eq!(row(&[("n", Value::HugeInt(42))]).decode::<i64>().unwrap(), 42);
+    assert_eq!(
+        row(&[("n", Value::HugeInt(42))]).decode::<i64>().unwrap(),
+        42
+    );
     assert_eq!(row(&[("s", text("x"))]).decode::<String>().unwrap(), "x");
-    assert_eq!(row(&[("n", Value::Null)]).decode::<Option<i64>>().unwrap(), None);
-    assert_eq!(row(&[("n", Value::Int(1))]).decode::<Option<i64>>().unwrap(), Some(1));
+    assert_eq!(
+        row(&[("n", Value::Null)]).decode::<Option<i64>>().unwrap(),
+        None
+    );
+    assert_eq!(
+        row(&[("n", Value::Int(1))])
+            .decode::<Option<i64>>()
+            .unwrap(),
+        Some(1)
+    );
     let two = row(&[("a", Value::Int(1)), ("b", Value::Int(2))]);
     assert!(two.decode::<i64>().is_err());
 }
 
 #[test]
 fn an_option_of_a_struct_decodes_from_a_row() {
-    let row = row(&[("id", Value::Int(1)), ("name", text("a")), ("email", text("e"))]);
+    let row = row(&[
+        ("id", Value::Int(1)),
+        ("name", text("a")),
+        ("email", text("e")),
+    ]);
     assert!(row.decode::<Option<User>>().unwrap().is_some());
 }
 
@@ -94,7 +109,10 @@ fn numbers_decode_into_rust_numbers() {
     assert_eq!(Value::UInt(255).decode::<u8>().unwrap(), 255);
     assert_eq!(Value::HugeInt(5).decode::<i64>().unwrap(), 5);
     assert_eq!(Value::UHugeInt(6).decode::<u32>().unwrap(), 6);
-    assert_eq!(Value::HugeInt(i128::MIN).decode::<i128>().unwrap(), i128::MIN);
+    assert_eq!(
+        Value::HugeInt(i128::MIN).decode::<i128>().unwrap(),
+        i128::MIN
+    );
     assert_eq!(Value::Int(2).decode::<f64>().unwrap(), 2.0);
     assert_eq!(Value::Float(0.5).decode::<f32>().unwrap(), 0.5);
     assert!(Value::Int(300).decode::<u8>().is_err());
@@ -119,16 +137,28 @@ fn text_decodes_into_strings_and_enums() {
     }
     assert_eq!(text("sad").decode::<Mood>().unwrap(), Mood::Sad);
     assert!(text("angry").decode::<Mood>().is_err());
-    assert_eq!(Value::Date("2024-01-01".into()).decode::<String>().unwrap(), "2024-01-01");
-    assert_eq!(Value::Time("10:00:00".into()).decode::<String>().unwrap(), "10:00:00");
-    assert_eq!(Value::Timestamp("t".into()).decode::<String>().unwrap(), "t");
+    assert_eq!(
+        Value::Date("2024-01-01".into()).decode::<String>().unwrap(),
+        "2024-01-01"
+    );
+    assert_eq!(
+        Value::Time("10:00:00".into()).decode::<String>().unwrap(),
+        "10:00:00"
+    );
+    assert_eq!(
+        Value::Timestamp("t".into()).decode::<String>().unwrap(),
+        "t"
+    );
     assert!(Value::Int(1).decode::<Mood>().is_err());
     let _ = Mood::Happy;
 }
 
 #[test]
 fn blobs_decode_into_bytes() {
-    assert_eq!(Value::Blob(vec![1, 2]).decode::<Vec<u8>>().unwrap(), vec![1, 2]);
+    assert_eq!(
+        Value::Blob(vec![1, 2]).decode::<Vec<u8>>().unwrap(),
+        vec![1, 2]
+    );
 }
 
 #[test]
@@ -149,7 +179,10 @@ fn nested_values_decode() {
     let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
     assert_eq!(list.decode::<Vec<i64>>().unwrap(), vec![1, 2]);
     assert!(list.decode::<(i64,)>().is_err());
-    let point = Value::Struct(vec![("x".into(), Value::Int(1)), ("y".into(), Value::Int(2))]);
+    let point = Value::Struct(vec![
+        ("x".into(), Value::Int(1)),
+        ("y".into(), Value::Int(2)),
+    ]);
     assert_eq!(point.decode::<Point>().unwrap(), Point { x: 1, y: 2 });
     let fields: HashMap<String, i64> = point.decode().unwrap();
     assert_eq!(fields.len(), 2);
@@ -196,7 +229,11 @@ fn newtypes_and_ignored_values_decode() {
 
 #[test]
 fn an_error_names_the_column_and_hides_the_value() {
-    let row = row(&[("id", Value::Int(1)), ("name", text("secret@example.com")), ("email", Value::Null)]);
+    let row = row(&[
+        ("id", Value::Int(1)),
+        ("name", text("secret@example.com")),
+        ("email", Value::Null),
+    ]);
     #[derive(Debug, Deserialize)]
     struct Wrong {
         #[allow(dead_code)]
@@ -226,4 +263,20 @@ fn an_out_of_range_error_hides_the_value() {
     assert!(!err.to_string().contains("123456"), "{err}");
     let err = Value::Decimal("9e999x".into()).decode::<f64>().unwrap_err();
     assert!(!err.to_string().contains("9e999x"), "{err}");
+}
+
+#[test]
+fn large_128_bit_values_decode_into_128_bit_types() {
+    let huge = Value::HugeInt(i128::MAX);
+    assert_eq!(huge.decode::<i128>().unwrap(), i128::MAX);
+    assert!(huge.decode::<i64>().is_err());
+    assert_eq!(Value::HugeInt(1 << 64).decode::<u128>().unwrap(), 1 << 64);
+    assert_eq!(
+        Value::HugeInt(u64::MAX.into()).decode::<u64>().unwrap(),
+        u64::MAX
+    );
+    assert_eq!(
+        Value::UHugeInt(u128::MAX).decode::<u128>().unwrap(),
+        u128::MAX
+    );
 }
