@@ -139,15 +139,10 @@ async fn a_failed_setup_hook_stops_the_boot() {
 }
 
 #[tokio::test]
-async fn the_shutdown_mark_stops_new_calls() {
+async fn calls_work_during_the_request_drain() {
+    // Autumn marks the shutdown first. Then it drains the requests. Then it runs the shutdown hooks.
     let client = app(plugin());
     client.state().begin_shutdown_for_test();
-    let db = DuckDb::from_state(client.state()).unwrap();
-    for _ in 0..200 {
-        if db.query("SELECT 1").fetch().await == Err(DuckDbError::ShuttingDown) {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    panic!("the shutdown watch did not stop new calls");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    client.get("/items").send().await.assert_ok();
 }

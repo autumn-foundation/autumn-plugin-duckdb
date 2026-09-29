@@ -326,14 +326,52 @@ async fn the_row_limit_gives_an_error() {
 
 #[tokio::test]
 async fn the_byte_limit_gives_an_error() {
-    let db = db_with(|c| c.max_result_bytes = 10).await;
+    // A text value counts 16 bytes and its text.
+    let db = db_with(|c| c.max_result_bytes = 26).await;
     db.query("SELECT repeat('x', 10)").fetch().await.unwrap();
     let err = db
         .query("SELECT repeat('x', 11)")
         .fetch_optional()
         .await
         .unwrap_err();
-    assert_eq!(err, DuckDbError::ResultTooLarge { limit_bytes: 10 });
+    assert_eq!(err, DuckDbError::ResultTooLarge { limit_bytes: 26 });
+}
+
+#[tokio::test]
+async fn the_byte_limit_counts_all_rows() {
+    let db = db_with(|c| c.max_result_bytes = 40).await;
+    db.query("SELECT 'xx' FROM range(2)").fetch().await.unwrap();
+    let err = db
+        .query("SELECT 'xx' FROM range(3)")
+        .fetch()
+        .await
+        .unwrap_err();
+    assert_eq!(err, DuckDbError::ResultTooLarge { limit_bytes: 40 });
+}
+
+#[tokio::test]
+async fn the_byte_limit_counts_empty_items() {
+    let db = db_with(|c| c.max_result_bytes = 1000).await;
+    let err = db
+        .query("SELECT list_transform(range(100000), x -> '') AS l")
+        .fetch()
+        .await
+        .unwrap_err();
+    assert_eq!(err, DuckDbError::ResultTooLarge { limit_bytes: 1000 });
+}
+
+#[test]
+fn reading_rows_stops_after_a_cancel() {
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    let limits = Limits {
+        take: usize::MAX,
+        max_rows: usize::MAX,
+        max_bytes: usize::MAX,
+    };
+    let err = read_rows(&conn, "SELECT * FROM range(10)", &[], limits, &|| true).unwrap_err();
+    assert_eq!(err, DuckDbError::Cancelled);
+    let rows = read_rows(&conn, "SELECT * FROM range(10)", &[], limits, &|| false).unwrap();
+    assert_eq!(rows.len(), 10);
 }
 
 #[tokio::test]

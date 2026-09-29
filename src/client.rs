@@ -139,6 +139,16 @@ impl Ticket {
     }
 }
 
+/// Tells the blocking work that the plugin cancelled the call.
+struct Stop(Arc<Ticket>);
+
+impl Stop {
+    /// Returns `true` after a timeout, a drop or a shutdown.
+    fn requested(&self) -> bool {
+        self.0.state().reason.is_some()
+    }
+}
+
 /// Ends a ticket when the blocking work ends, also after a panic.
 struct Finish(Arc<Ticket>);
 
@@ -257,7 +267,7 @@ impl DuckDb {
         T: Send + 'static,
         F: FnOnce(&Connection) -> duckdb::Result<T> + Send + 'static,
     {
-        self.call(true, move |conn| work(conn).map_err(DuckDbError::from))
+        self.call(true, move |conn, _| work(conn).map_err(DuckDbError::from))
             .await
     }
 
@@ -329,7 +339,7 @@ impl DuckDb {
     async fn call<T, F>(&self, counted: bool, work: F) -> Result<T, DuckDbError>
     where
         T: Send + 'static,
-        F: FnOnce(&Connection) -> Result<T, DuckDbError> + Send + 'static,
+        F: FnOnce(&Connection, &Stop) -> Result<T, DuckDbError> + Send + 'static,
     {
         let inner = &*self.inner;
         if inner.shutting_down.load(Ordering::Acquire) {
@@ -344,7 +354,7 @@ impl DuckDb {
     async fn run<T, F>(&self, guard: &mut Guard<'_>, work: F) -> Result<T, DuckDbError>
     where
         T: Send + 'static,
-        F: FnOnce(&Connection) -> Result<T, DuckDbError> + Send + 'static,
+        F: FnOnce(&Connection, &Stop) -> Result<T, DuckDbError> + Send + 'static,
     {
         let inner = &*self.inner;
         let timeout = inner.config.timeout();
@@ -369,7 +379,7 @@ impl DuckDb {
             let finish = finish;
             let result = match finish.0.attach(lease.connection().interrupt_handle()) {
                 Some(_) => Err(DuckDbError::Cancelled),
-                None => work(lease.connection()),
+                None => work(lease.connection(), &Stop(Arc::clone(&finish.0))),
             };
             let reason = finish.0.finish();
             drop(finish);
@@ -420,7 +430,7 @@ impl DuckDbQuery {
     pub async fn execute(self) -> Result<usize, DuckDbError> {
         check_statements(&self.sql)?;
         let Self { db, sql, params } = self;
-        db.call(true, move |conn| {
+        db.call(true, move |conn, _| {
             let mut stmt = prepare(conn, &sql, params.len())?;
             Ok(stmt.execute(params_from_iter(params.iter()))?)
         })
@@ -482,37 +492,14 @@ impl DuckDbQuery {
         let Self { db, sql, params } = self;
         let max_rows = db.inner.config.max_rows;
         let max_bytes = db.inner.config.max_result_bytes;
+        let limits = Limits {
+            take,
+            max_rows,
+            max_bytes,
+        };
         let rows = db
-            .call(true, move |conn| {
-                let mut stmt = prepare(conn, &sql, params.len())?;
-                let mut rows = stmt.query(params_from_iter(params.iter()))?;
-                let columns: Arc<[String]> = rows
-                    .as_ref()
-                    .map(Statement::column_names)
-                    .unwrap_or_default()
-                    .into();
-                let mut out = Vec::new();
-                let mut bytes = 0_usize;
-                while out.len() < take {
-                    let Some(row) = rows.next()? else {
-                        break;
-                    };
-                    if out.len() == max_rows {
-                        return Err(DuckDbError::TooManyRows { limit: max_rows });
-                    }
-                    let values = (0..columns.len())
-                        .map(|index| row.get::<_, duckdb::types::Value>(index).map(Value::from))
-                        .collect::<duckdb::Result<Vec<_>>>()?;
-                    let row = Row::new(Arc::clone(&columns), values);
-                    bytes = bytes.saturating_add(row.size());
-                    if bytes > max_bytes {
-                        return Err(DuckDbError::ResultTooLarge {
-                            limit_bytes: max_bytes,
-                        });
-                    }
-                    out.push(row);
-                }
-                Ok(out)
+            .call(true, move |conn, stop| {
+                read_rows(conn, &sql, &params, limits, &|| stop.requested())
             })
             .await?;
         db.inner.metrics.rows(rows.len());
@@ -532,6 +519,59 @@ impl std::fmt::Debug for DuckDbQuery {
             .field("params", &self.params.len())
             .finish()
     }
+}
+
+/// The row limits of one fetch.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Limits {
+    /// The rows to read. The fetch stops after them.
+    pub(crate) take: usize,
+    /// More rows give an error.
+    pub(crate) max_rows: usize,
+    /// More bytes give an error.
+    pub(crate) max_bytes: usize,
+}
+
+/// Runs a query and reads its rows in the limits.
+pub(crate) fn read_rows(
+    conn: &Connection,
+    sql: &str,
+    params: &[Param],
+    limits: Limits,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<Row>, DuckDbError> {
+    let _ = stop;
+    let mut stmt = prepare(conn, sql, params.len())?;
+    let mut rows = stmt.query(params_from_iter(params.iter()))?;
+    let columns: Arc<[String]> = rows
+        .as_ref()
+        .map(Statement::column_names)
+        .unwrap_or_default()
+        .into();
+    let mut out = Vec::new();
+    let mut bytes = 0_usize;
+    while out.len() < limits.take {
+        let Some(row) = rows.next()? else {
+            break;
+        };
+        if out.len() == limits.max_rows {
+            return Err(DuckDbError::TooManyRows {
+                limit: limits.max_rows,
+            });
+        }
+        let values = (0..columns.len())
+            .map(|index| row.get::<_, duckdb::types::Value>(index).map(Value::from))
+            .collect::<duckdb::Result<Vec<_>>>()?;
+        let row = Row::new(Arc::clone(&columns), values);
+        bytes = bytes.saturating_add(row.size());
+        if bytes > limits.max_bytes {
+            return Err(DuckDbError::ResultTooLarge {
+                limit_bytes: limits.max_bytes,
+            });
+        }
+        out.push(row);
+    }
+    Ok(out)
 }
 
 /// Refuses SQL text with more than one statement.

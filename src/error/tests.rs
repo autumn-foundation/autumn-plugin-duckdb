@@ -105,11 +105,12 @@ fn errors_map_to_http_status() {
 }
 
 #[test]
-fn timeouts_and_write_conflicts_are_retryable() {
+fn only_write_conflicts_are_retryable() {
     let timeout = DuckDbError::Timeout {
         timeout: Duration::from_secs(1),
     };
-    assert!(timeout.is_retryable());
+    // A timed-out query can have changed data. A retry can change it again.
+    assert!(!timeout.is_retryable());
     assert!(with_class("TransactionContext", "Conflict on tuple deletion").is_retryable());
     assert!(!with_class("Constraint", "dup").is_retryable());
     assert!(!DuckDbError::ShuttingDown.is_retryable());
