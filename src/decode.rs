@@ -9,7 +9,8 @@
 //! - Numbers decode into each Rust number type that holds them. A decimal decodes into `f64`, `f32` or `String`.
 //! - Text decodes into `String`, `&str` or a unit enum variant. A blob decodes into `Vec<u8>`.
 //! - Lists decode into sequences. Structs and maps decode into structs and maps.
-//! - An error names the column. An error never shows a value, because values can hold personal data.
+//! - An error names the column. The plugin messages never show a value, because values can hold personal data.
+//!   A custom `Deserialize` impl can put a value in its own message.
 
 use serde::de::value::{BorrowedStrDeserializer, MapDeserializer, SeqDeserializer};
 use serde::de::{
@@ -83,6 +84,10 @@ impl serde::de::Error for DecodeError {
             "invalid value: {}, expected {expected}",
             kind(&unexpected)
         ))
+    }
+
+    fn unknown_field(_field: &str, expected: &'static [&'static str]) -> Self {
+        Self::custom(format_args!("unknown field, expected one of {expected:?}"))
     }
 
     fn unknown_variant(_variant: &str, expected: &'static [&'static str]) -> Self {
