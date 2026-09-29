@@ -237,6 +237,49 @@ async fn lexer_tricks_do_not_run_a_second_statement() {
 }
 
 #[tokio::test]
+async fn session_state_never_reaches_the_next_call() {
+    let db = db_with(|c| c.max_connections = 1).await;
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TABLE t AS SELECT 'main' AS v;
+             CREATE SCHEMA other;
+             CREATE TABLE other.t AS SELECT 'other' AS v;",
+        )
+    })
+    .await
+    .unwrap();
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TEMP TABLE secret AS SELECT 42 AS n;
+             SET VARIABLE v = 7;
+             PREPARE p AS SELECT 99;
+             USE memory.other;
+             BEGIN;
+             INSERT INTO main.t VALUES ('open');",
+        )
+    })
+    .await
+    .unwrap();
+    let v: String = db.query("SELECT v FROM t").fetch_one_as().await.unwrap();
+    assert_eq!(v, "main");
+    let err = db.query("SELECT * FROM secret").fetch().await.unwrap_err();
+    assert_eq!(err.class(), Some("Catalog"));
+    let variable: Option<i64> = db
+        .query("SELECT getvariable('v')")
+        .fetch_one_as()
+        .await
+        .unwrap();
+    assert_eq!(variable, None);
+    assert!(db.query("EXECUTE p").fetch().await.is_err());
+    let rows: i64 = db
+        .query("SELECT count(*) FROM t")
+        .fetch_one_as()
+        .await
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
+#[tokio::test]
 async fn a_wrong_parameter_count_is_refused() {
     let db = db().await;
     let err = db.query("SELECT ?, ?").bind(1).fetch().await.unwrap_err();
