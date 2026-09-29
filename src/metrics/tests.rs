@@ -1,3 +1,5 @@
+#![allow(clippy::float_cmp, reason = "the counters are small whole numbers")]
+
 use super::*;
 
 fn sample(families: &[MetricFamily], name: &str, outcome: Option<&str>) -> f64 {
@@ -8,9 +10,7 @@ fn sample(families: &[MetricFamily], name: &str, outcome: Option<&str>) -> f64 {
     family
         .samples
         .iter()
-        .find(|s| {
-            outcome.is_none_or(|o| s.labels == vec![("outcome".to_owned(), o.to_owned())])
-        })
+        .find(|s| outcome.is_none_or(|o| s.labels == vec![("outcome".to_owned(), o.to_owned())]))
         .unwrap()
         .value
 }
@@ -28,10 +28,19 @@ fn counters_follow_the_calls() {
     metrics.rows(7);
     let families = metrics.collect();
     assert_eq!(sample(&families, "duckdb_calls_started_total", None), 5.0);
-    assert_eq!(sample(&families, "duckdb_calls_total", Some("succeeded")), 1.0);
+    assert_eq!(
+        sample(&families, "duckdb_calls_total", Some("succeeded")),
+        1.0
+    );
     assert_eq!(sample(&families, "duckdb_calls_total", Some("failed")), 1.0);
-    assert_eq!(sample(&families, "duckdb_calls_total", Some("cancelled")), 1.0);
-    assert_eq!(sample(&families, "duckdb_calls_total", Some("timed_out")), 1.0);
+    assert_eq!(
+        sample(&families, "duckdb_calls_total", Some("cancelled")),
+        1.0
+    );
+    assert_eq!(
+        sample(&families, "duckdb_calls_total", Some("timed_out")),
+        1.0
+    );
     assert_eq!(sample(&families, "duckdb_calls_open", None), 1.0);
     assert_eq!(sample(&families, "duckdb_rows_returned_total", None), 7.0);
 }
@@ -49,6 +58,11 @@ fn kinds_and_names_follow_the_rules() {
         assert!(!family.name.starts_with("autumn_"), "{}", family.name);
         assert!(!family.help.is_empty());
         let counter = family.name.ends_with("_total");
-        assert_eq!(counter, matches!(family.kind, MetricKind::Counter), "{}", family.name);
+        assert_eq!(
+            counter,
+            matches!(family.kind, MetricKind::Counter),
+            "{}",
+            family.name
+        );
     }
 }
