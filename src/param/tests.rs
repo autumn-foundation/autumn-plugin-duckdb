@@ -20,6 +20,9 @@ fn integers_convert() {
     assert_eq!(Param::from(3_u32), Param::UInt(3));
     assert_eq!(Param::from(4_u64), Param::UInt(4));
     assert_eq!(Param::from(i128::MAX), Param::HugeInt(i128::MAX));
+    assert_eq!(Param::from(-5_isize), Param::Int(-5));
+    assert_eq!(Param::from(5_usize), Param::UInt(5));
+    assert_eq!(Param::from(u128::MAX), Param::UHugeInt(u128::MAX));
 }
 
 #[test]
@@ -47,6 +50,8 @@ fn params_bind_as_the_same_duckdb_type() {
     assert_eq!(round_trip(-7_i64), Raw::BigInt(-7));
     assert_eq!(round_trip(u64::MAX), Raw::UBigInt(u64::MAX));
     assert_eq!(round_trip(i128::MIN + 1), Raw::HugeInt(i128::MIN + 1));
+    assert_eq!(round_trip(u128::MAX), Raw::UHugeInt(u128::MAX));
+    assert_eq!(round_trip(7_usize), Raw::UBigInt(7));
     assert_eq!(round_trip(0.25_f64), Raw::Double(0.25));
     assert_eq!(round_trip("it's"), Raw::Text("it's".into()));
     assert_eq!(round_trip(vec![0_u8, 255]), Raw::Blob(vec![0, 255]));

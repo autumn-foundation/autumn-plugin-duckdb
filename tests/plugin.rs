@@ -146,3 +146,15 @@ async fn calls_work_during_the_request_drain() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     client.get("/items").send().await.assert_ok();
 }
+
+#[tokio::test]
+async fn a_standalone_handle_can_shut_down() {
+    let db = DuckDb::open(DuckDbConfig::default()).await.unwrap();
+    let row = db.query("SELECT 1 AS one").fetch_one().await.unwrap();
+    assert_eq!(row.columns(), ["one"]);
+    db.shutdown().await;
+    assert_eq!(
+        db.query("SELECT 1").fetch_one().await.unwrap_err(),
+        DuckDbError::ShuttingDown
+    );
+}
