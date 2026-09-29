@@ -95,7 +95,7 @@ impl Value {
         matches!(self, Self::Null)
     }
 
-    /// Gives the text of a text, decimal, date, time or timestamp value.
+    /// Returns the text of a text, decimal, date, time or timestamp value.
     #[must_use]
     pub const fn as_str(&self) -> Option<&str> {
         match self {
@@ -108,7 +108,7 @@ impl Value {
         }
     }
 
-    /// Gives an integer value that fits in `i64`.
+    /// Returns an integer value that fits in `i64`.
     #[must_use]
     pub fn as_i64(&self) -> Option<i64> {
         match *self {
@@ -120,7 +120,7 @@ impl Value {
         }
     }
 
-    /// Gives a number as `f64`. A decimal is parsed.
+    /// Returns a number as `f64`. The method parses a decimal.
     #[must_use]
     #[allow(clippy::cast_precision_loss, reason = "the caller asks for an f64")]
     pub fn as_f64(&self) -> Option<f64> {
@@ -135,7 +135,7 @@ impl Value {
         }
     }
 
-    /// Gives a boolean value.
+    /// Returns a boolean value.
     #[must_use]
     pub const fn as_bool(&self) -> Option<bool> {
         match self {
@@ -222,7 +222,7 @@ pub(crate) enum Shape {
     Map(Box<Self>, Box<Self>),
 }
 
-/// Gives the shape of a column type, or the name of a type that the plugin refuses.
+/// Returns the shape of a column type, or the name of a type that the plugin refuses.
 ///
 /// The refused types lose data or panic in `duckdb-rs`.
 pub(crate) fn shape_of(ty: &LogicalTypeHandle) -> Result<Shape, &'static str> {
@@ -304,7 +304,7 @@ impl Value {
     }
 }
 
-/// Gives the text of `value` with `scale` decimal places.
+/// Returns the text of `value` with `scale` decimal places.
 fn decimal_text(value: i128, scale: u8) -> String {
     duckdb::types::Decimal::new(38, scale, value)
         .map_or_else(|_| value.to_string(), |decimal| decimal.to_string())
@@ -421,13 +421,13 @@ impl Row {
         &self.values
     }
 
-    /// Gives the values, in column order.
+    /// Returns the values and drops the column names.
     #[must_use]
     pub fn into_values(self) -> Vec<Value> {
         self.values
     }
 
-    /// Gives the value of the first column with the name `column`.
+    /// Returns the value of the first column with the name `column`.
     #[must_use]
     pub fn get(&self, column: &str) -> Option<&Value> {
         let index = self.columns.iter().position(|name| name == column)?;

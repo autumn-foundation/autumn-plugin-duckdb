@@ -2,15 +2,19 @@
 //!
 //! # Contract
 //!
-//! - Each call runs on a blocking thread with one pooled connection.
-//! - Each call has a deadline: `timeout_ms` from the call start. The wait for a connection counts.
-//! - At the deadline, the call gives [`DuckDbError::Timeout`] at once. The plugin interrupts the query.
+//! A call is one query or one `with_connection` closure.
+//!
+//! - Each call runs on a blocking thread with a new connection. See [`crate::pool`].
+//! - Each call has a deadline: the timeout from the call start. The wait for a connection counts.
+//! - At the deadline, the call returns [`DuckDbError::Timeout`] immediately. The plugin interrupts the query.
 //! - A dropped call future interrupts its query.
 //! - An interrupt repeats until the call ends, because DuckDB ignores an interrupt before a query starts.
-//!   An interrupt never reaches the next call on the same connection.
+//!   No interrupt comes after the call ends.
 //! - A query refuses SQL with more than one statement before it uses a connection.
 //! - A query refuses a parameter count that is not the placeholder count.
-//! - A fetch gives an error, not a partial result, above `max_rows` or `max_result_bytes`.
+//! - A fetch refuses a column type that loses data. See [`crate::value::shape_of`].
+//! - A fetch returns an error, not a partial result, above the row limit or `max_result_bytes`.
+//!   DuckDB makes the full result before the plugin reads it. The limits do not limit DuckDB memory.
 //! - After [`DuckDb::shutdown`], new calls fail with [`DuckDbError::ShuttingDown`].
 //!   Open calls get an interrupt. A writable file gets a `CHECKPOINT`.
 
@@ -219,6 +223,7 @@ impl DuckDb {
     /// # Errors
     ///
     /// Returns [`DuckDbError::Config`] for a bad configuration, or the DuckDB error of the open.
+    /// Returns [`DuckDbError::TaskFailed`] if the blocking open task stops.
     pub async fn open(config: DuckDbConfig) -> Result<Self, DuckDbError> {
         Self::open_with(config, Vec::new(), Arc::default()).await
     }
@@ -248,7 +253,8 @@ impl DuckDb {
         })
     }
 
-    /// Starts a query. Bind values with [`DuckDbQuery::bind`].
+    /// Makes a query for `sql`. Bind values with [`DuckDbQuery::bind`].
+    /// Then run it with `execute` or a fetch method.
     pub fn query(&self, sql: impl Into<String>) -> DuckDbQuery {
         DuckDbQuery {
             db: self.clone(),
@@ -259,14 +265,21 @@ impl DuckDb {
         }
     }
 
-    /// Runs `work` on a pooled connection, on a blocking thread.
+    /// Runs `work` on a new connection, on a blocking thread.
     ///
     /// Use it for the full `duckdb` API, for example a transaction or an appender.
-    /// The timeout applies. The plugin rolls back a transaction that `work` leaves open.
+    /// DuckDB rolls back a transaction that `work` leaves open.
+    /// The row limit and the byte limit do not apply.
+    ///
+    /// At the timeout, the call returns. `work` continues until DuckDB stops its query.
+    /// Rust code in `work` does not stop.
+    ///
+    /// To return an app error, return `Ok(Err(app_error))` from `work`.
     ///
     /// # Errors
     ///
-    /// Returns the error of `work`, [`DuckDbError::Timeout`], or [`DuckDbError::TaskFailed`] if `work` panics.
+    /// Returns the error of `work` as [`DuckDbError::Database`], or another [`DuckDbError`].
+    /// For example: `Timeout`, `ShuttingDown`, or `TaskFailed` if `work` panics.
     pub async fn with_connection<T, F>(&self, work: F) -> Result<T, DuckDbError>
     where
         T: Send + 'static,
@@ -449,11 +462,13 @@ impl DuckDbQuery {
         self
     }
 
-    /// Runs the statement and gives the changed row count.
+    /// Runs the query and gives the changed row count.
+    ///
+    /// `INSERT ... RETURNING`, `CREATE TABLE ... AS` and `SELECT` give 0.
     ///
     /// # Errors
     ///
-    /// Returns [`DuckDbError`] if the statement fails or a limit applies.
+    /// Returns [`DuckDbError`] if the query fails or times out.
     pub async fn execute(self) -> Result<usize, DuckDbError> {
         check_statements(&self.sql)?;
         let timeout = self.call_timeout();
@@ -487,6 +502,8 @@ impl DuckDbQuery {
     }
 
     /// Runs the query and gives the first row, if any. The plugin reads no more rows.
+    ///
+    /// DuckDB still makes the full result. Add `LIMIT 1` to a query with a large result.
     ///
     /// # Errors
     ///

@@ -92,7 +92,7 @@ const fn bool_text(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
-/// Gives `text` as a SQL string literal.
+/// Returns `text` as a SQL string literal.
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }

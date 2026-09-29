@@ -31,7 +31,7 @@ Write all ideas first. Do not judge them in this step.
 19. A setup hook: Rust code that runs on the database before requests.
 20. `with_connection`: run Rust code on a pooled connection, for example a transaction or an appender.
 21. A readiness check that runs `SELECT 1`.
-22. Prometheus metrics: queries by outcome, open queries, rows returned.
+22. Prometheus metrics: calls by outcome, open calls, rows returned.
 23. Map DuckDB error classes to HTTP status codes.
 24. Arrow and Polars results.
 25. Streaming rows.
@@ -105,8 +105,8 @@ Question: "How can we make this plugin fail?" Each answer gives a countermeasure
 
 ### Green hat (new ideas)
 
-- A setup hook runs with full access before the plugin applies the limits. It can create views and load data.
-- `with_connection` gives the full `duckdb` API under the same timeout and limits.
+- A setup hook runs with full access before the plugin disables external access and locks the configuration. It can create views and load data.
+- `with_connection` gives the full `duckdb` API under the same timeout.
 - A property test compares our date text with DuckDB's own cast.
 
 ### Blue hat (process)
@@ -167,4 +167,26 @@ Each item is one cycle. Red: write a test that fails. Green: write the minimum c
 
 ## 7. Review
 
-Review agents read the code after the build. Each agent has one angle. This section records the findings and the fixes.
+Five review agents read the code after the build. Each agent had one angle. Each finding got a red test first, then a fix.
+
+| Angle | Main findings |
+|-------|---------------|
+| Security | Three lexer gaps let a second statement run: `\r` ends a line comment, `$` continues a word, and dollar-quote tags can have non-ASCII letters. The debug text of `DuckDbError` showed the DuckDB message. The byte limit counted empty items as 0. |
+| Correctness and concurrency | Reused connections kept session state: `USE`, temp tables, variables, prepared statements. The shutdown watch refused calls while Autumn drained the requests. A timed-out call can have changed data, but `Timeout` was retryable. |
+| DuckDB semantics | `TIME_NS` panics in `duckdb-rs`. `TIMETZ`, `BIT` and `BIGNUM` lose data. A nested `UHUGEINT` wraps. `TIMESTAMPTZ` text had no `Z`. A map with a nested key did not serialize to JSON. A whole decimal did not decode into an integer. |
+| API and documentation | `shutdown`, `fetch_one`, per-query `timeout` and `max_rows` were missing. `duckdb` needed a `~` pin. Some docs did not match the code. Some text did not follow ASD-STE100. |
+| Test quality | Two timing tests failed under CPU load. The statement oracle could not make the three lexer gaps. Some contract lines had no test. |
+
+### Changes after the review
+
+- A new property test checks the safety rule of the lexer: the count is never lower than the statements that DuckDB runs. The lexer fails closed on an open literal or block comment.
+- Each call gets a new connection. `try_clone` is fast. This removes the idle list, the rollback on release and the release race.
+- The plugin reads the column types before the first row. It refuses the lossy types and keeps nested facts, for example the `Z` of `TIMESTAMPTZ`.
+- The shutdown hook alone shuts the handle down. The WAL keeps the data if Autumn ends the process first.
+- Timing tests use signals, not sleeps.
+
+### Out of scope for 0.1
+
+- Streaming rows. DuckDB makes the full result first. `LIMIT` and `memory_limit` limit DuckDB.
+- A per-connection setup hook. Setup hooks create database objects only.
+- `TIMESTAMPTZ` inside a `UNION` has no `Z`: `duckdb-rs` does not give the member type.

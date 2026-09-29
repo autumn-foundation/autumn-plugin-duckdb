@@ -2,9 +2,10 @@
 //!
 //! # Contract
 //!
-//! - Each Rust scalar converts to one [`Param`]. `None` converts to [`Param::Null`].
+//! - Each Rust scalar in the `From` list converts to one [`Param`]. `None` converts to [`Param::Null`].
 //! - A [`Param`] binds as the DuckDB value of the same type.
-//! - DuckDB casts text to the parameter type. Bind a date as `"2024-01-31"`.
+//! - DuckDB casts text to the parameter type if the SQL gives the type, for example `d > ?`.
+//!   In a function call, cast the parameter in the SQL: `year(?::DATE)`.
 //! - Lists, structs and maps do not bind. `duckdb-rs` does not support them.
 
 use duckdb::ToSql;
@@ -51,7 +52,7 @@ impl ToSql for Param {
     }
 }
 
-/// Implements `From` for types that convert with a variant and a cast.
+/// Implements `From<source>` for `Param` through one variant.
 macro_rules! from_scalar {
     ($variant:ident($target:ty): $($source:ty),+) => {
         $(

@@ -66,15 +66,17 @@ pub enum DuckDbError {
         /// The bound parameters.
         parameters: usize,
     },
-    /// The call did not complete in time. The plugin interrupted it.
+    /// The call did not complete in time. If the query started, the plugin interrupts it.
+    ///
+    /// The query can have changed data before the interrupt.
     #[error("the call did not complete in {timeout:?}")]
     #[non_exhaustive]
     Timeout {
         /// The timeout.
         timeout: Duration,
     },
-    /// Someone interrupted the call.
-    #[error("the call was cancelled")]
+    /// An interrupt stopped the query. The interrupt did not come from a timeout or a shutdown.
+    #[error("an interrupt stopped the call")]
     Cancelled,
     /// The result has more rows than the limit.
     #[error("the query returned more than {limit} rows")]
@@ -154,7 +156,7 @@ impl std::fmt::Debug for DuckDbError {
     }
 }
 
-/// Gives the class of a DuckDB message.
+/// Returns the class of a DuckDB message.
 pub(crate) fn class_of(message: &str) -> &str {
     let first_line = message.lines().next().unwrap_or_default();
     first_line

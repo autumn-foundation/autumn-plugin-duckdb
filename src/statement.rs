@@ -13,9 +13,9 @@
 //!   Block comments nest.
 //! - Text that ends in an open literal or block comment gives `None`. The plugin refuses it.
 
-/// Gives the number of statements in `sql`.
+/// Returns the number of statements in `sql`.
 ///
-/// Gives `None` if the text ends in an open literal or block comment.
+/// Returns `None` if the text ends in an open literal or block comment.
 pub(crate) fn count(sql: &str) -> Option<usize> {
     let bytes = sql.as_bytes();
     let mut statements = 0;
@@ -41,7 +41,7 @@ pub(crate) fn count(sql: &str) -> Option<usize> {
     Some(statements + usize::from(has_text))
 }
 
-/// Gives the end of the token at `at`. The token is not white space or a comment.
+/// Returns the end of the token at `at`. The token is not white space or a comment.
 fn token_end(bytes: &[u8], at: usize) -> Option<usize> {
     match (bytes.get(at), bytes.get(at + 1)) {
         (Some(b'\''), _) => quote_end(bytes, at + 1, b'\'', false),
@@ -69,7 +69,7 @@ const fn is_word(byte: u8) -> bool {
     is_word_start(byte) || byte.is_ascii_digit()
 }
 
-/// Gives the end of a quoted token. `from` is the first byte after the open quote.
+/// Returns the end of a quoted token. `from` is the first byte after the open quote.
 fn quote_end(bytes: &[u8], from: usize, quote: u8, backslash: bool) -> Option<usize> {
     let mut at = from;
     while let Some(&byte) = bytes.get(at) {
@@ -87,7 +87,7 @@ fn quote_end(bytes: &[u8], from: usize, quote: u8, backslash: bool) -> Option<us
     None
 }
 
-/// Gives the end of a dollar quote, or of a lone `$` such as a parameter sign.
+/// Returns the end of a dollar quote, or of a lone `$` such as a parameter sign.
 fn dollar_end(bytes: &[u8], at: usize) -> Option<usize> {
     let mut tag_end = at + 1;
     if bytes.get(tag_end).is_some_and(|&b| is_word_start(b)) {
@@ -105,7 +105,7 @@ fn dollar_end(bytes: &[u8], at: usize) -> Option<usize> {
         .map(|offset| tag_end + 1 + offset + tag.len())
 }
 
-/// Gives the end of a `--` comment: the byte after the line end. `\n` and `\r` end a line.
+/// Returns the end of a `--` comment: the byte after the line end. `\n` and `\r` end a line.
 fn line_end(bytes: &[u8], at: usize) -> usize {
     bytes[at..]
         .iter()
@@ -113,7 +113,7 @@ fn line_end(bytes: &[u8], at: usize) -> usize {
         .map_or(bytes.len(), |offset| at + offset + 1)
 }
 
-/// Gives the end of a `/* */` comment. Block comments nest.
+/// Returns the end of a `/* */` comment. Block comments nest.
 fn block_end(bytes: &[u8], at: usize) -> Option<usize> {
     let mut depth = 0_usize;
     let mut at = at;

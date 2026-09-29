@@ -1,12 +1,14 @@
-//! Serde decoding of rows and values.
+//! Decodes rows and values with serde.
 //!
 //! # Contract
 //!
-//! - A row decodes into a struct or a map by column name. Extra columns are ignored.
+//! - A row decodes into a struct or a map by column name. The decoder ignores extra columns.
 //! - A row decodes into a tuple or a sequence by column position. The length must match.
 //! - A row with one column also decodes into the type of that column, for example `i64`.
+//!   A one-column list or map row decodes into a sequence or a map of the column value.
 //! - `NULL` decodes into `None` or `()`.
 //! - Numbers decode into each Rust number type that holds them. A decimal decodes into `f64`, `f32` or `String`.
+//!   A decimal with no fraction also decodes into an integer type.
 //! - Text decodes into `String`, `&str` or a unit enum variant. A blob decodes into `Vec<u8>`.
 //! - Lists decode into sequences. Structs and maps decode into structs and maps.
 //! - An error names the column. The plugin messages never show a value, because values can hold personal data.
@@ -319,7 +321,7 @@ impl<'de> RowDe<'de> {
         }
     }
 
-    /// Gives the only value of a row with one column.
+    /// Returns the only value of a row with one column.
     fn only(&self) -> Result<(&'de str, &'de Value), DecodeError> {
         match (self.0.columns(), self.0.values()) {
             ([name], [value]) => Ok((name.as_str(), value)),

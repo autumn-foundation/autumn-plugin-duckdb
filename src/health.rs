@@ -3,7 +3,7 @@
 //! # Contract
 //!
 //! - The check is down before the plugin starts and after the shutdown.
-//! - The check runs `SELECT 1` on the root connection. A busy pool does not make it down.
+//! - The check runs `SELECT 1` on the root connection. It stays up when all connections are in use.
 //! - The output does not show the DuckDB message. The log has the error class.
 
 use std::collections::HashMap;

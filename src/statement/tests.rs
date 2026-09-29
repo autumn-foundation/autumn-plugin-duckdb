@@ -156,7 +156,7 @@ thread_local! {
     };
 }
 
-/// Gives the number of statements that DuckDB runs for `sql`.
+/// Returns the number of statements that DuckDB runs for `sql`.
 fn duckdb_count(sql: &str) -> usize {
     ORACLE.with(|conn| {
         conn.execute_batch("DELETE FROM log").unwrap();
@@ -193,7 +193,7 @@ proptest! {
     }
 }
 
-/// Gives the number of `INSERT INTO log` statements that DuckDB runs for `sql`.
+/// Returns the number of `INSERT INTO log` statements that DuckDB runs for `sql`.
 ///
 /// A parse error runs nothing. A later error can come after earlier statements ran.
 fn duckdb_side_effects(sql: &str) -> usize {

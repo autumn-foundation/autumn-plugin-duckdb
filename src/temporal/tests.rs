@@ -12,7 +12,7 @@ thread_local! {
     static ORACLE: duckdb::Connection = duckdb::Connection::open_in_memory().unwrap();
 }
 
-/// Gives the DuckDB text for `value` with `sql`.
+/// Returns the DuckDB text for `value` with `sql`.
 fn cast(sql: &str, value: i64) -> String {
     ORACLE.with(|conn| conn.query_row(sql, [value], |row| row.get(0)).unwrap())
 }

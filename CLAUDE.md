@@ -49,15 +49,18 @@ Each pure module has a `# Contract` doc section. Change the contract first. Then
 - Never log SQL text, parameter values or DuckDB messages. A DuckDB message can hold a key value.
 - Each DuckDB call runs on a blocking thread. Never call DuckDB on an async worker thread.
 - Each call has a deadline. At the deadline, the plugin interrupts the query.
-- External access, extension auto-install and auto-load are off by default. The configuration is locked after startup.
+- External access, extension auto-install and auto-load are off by default. The plugin locks the configuration after startup.
+- Each call gets a new connection. Never reuse a connection: session state leaks.
+- Never log or show `DuckDbError::detail`. The debug text must also hide it.
 - Metric names must not start with `autumn_`.
 - No test uses the network. Tests use in-memory DuckDB or a temporary file.
 
 ## Test notes
 
 - `TestApp` runs startup hooks but not shutdown hooks. `plugin::tests` tests the shutdown hook.
-- `AppState::begin_shutdown_for_test` marks the shutdown. The shutdown watch then interrupts the open queries.
-- A slow query for timeout tests: `SELECT count(*) FROM range(10000000000)`.
+- `AppState::begin_shutdown_for_test` marks the shutdown. Calls must still work: Autumn drains the requests before the hooks.
+- A slow query for timeout tests: `SELECT count(*) FROM range(100000) a, range(10000000) b`.
+- Do not use sleeps to order events in tests. Use the `hold` helper in `client::tests`: it holds a connection until a signal.
 
 ## Documentation style
 
