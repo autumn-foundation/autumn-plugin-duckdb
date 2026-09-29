@@ -161,9 +161,10 @@ async fn a_standalone_handle_can_shut_down() {
 
 /// Builds the app and gives the text of the startup panic.
 fn boot_panic(plugin: DuckDbPlugin) -> String {
-    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app(plugin)))
-        .err()
-        .expect("the boot must fail");
+    let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app(plugin)))
+    else {
+        return "the boot did not fail".to_owned();
+    };
     payload
         .downcast_ref::<String>()
         .cloned()
