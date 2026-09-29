@@ -17,8 +17,7 @@ fn env_for(dir: &Path) -> MockEnv {
     MockEnv::new().with("AUTUMN_MANIFEST_DIR", dir.to_str().unwrap())
 }
 
-fn resolve(dir: &Path, env: &MockEnv) -> Result<DuckDbConfig, ConfigError> {
-    let _ = dir;
+fn resolve(env: &MockEnv) -> Result<DuckDbConfig, ConfigError> {
     DuckDbConfig::resolve_with_env("duckdb", env)
 }
 
@@ -48,7 +47,7 @@ fn defaults_are_safe() {
 #[test]
 fn no_file_gives_the_defaults() {
     let dir = tempfile::tempdir().unwrap();
-    let config = resolve(dir.path(), &env_for(dir.path())).unwrap();
+    let config = resolve(&env_for(dir.path())).unwrap();
     assert_eq!(config, DuckDbConfig::default());
 }
 
@@ -80,7 +79,7 @@ checkpoint_on_shutdown = false
 default_order = "desc"
 "#,
     );
-    let config = resolve(dir.path(), &env_for(dir.path())).unwrap();
+    let config = resolve(&env_for(dir.path())).unwrap();
     assert_eq!(config.path, "data/app.duckdb");
     assert!(!config.is_in_memory());
     assert_eq!(config.access_mode, AccessMode::ReadOnly);
@@ -117,7 +116,7 @@ fn inline_profile_overrides_the_base() {
         "[duckdb]\npath = \"dev.duckdb\"\nmax_rows = 5\n[profile.prod.duckdb]\npath = \"prod.duckdb\"\n",
     );
     let env = env_for(dir.path()).with("AUTUMN_ENV", "production");
-    let config = resolve(dir.path(), &env).unwrap();
+    let config = resolve(&env).unwrap();
     assert_eq!(config.path, "prod.duckdb");
     assert_eq!(config.max_rows, 5);
 }
@@ -136,7 +135,7 @@ fn profile_file_overrides_the_inline_profile() {
         "[duckdb]\npath = \"file\"\n",
     );
     let env = env_for(dir.path()).with("AUTUMN_PROFILE", "staging");
-    assert_eq!(resolve(dir.path(), &env).unwrap().path, "file");
+    assert_eq!(resolve(&env).unwrap().path, "file");
 }
 
 #[test]
@@ -147,7 +146,7 @@ fn settings_merge_across_layers() {
         "autumn.toml",
         "[duckdb.settings]\na = \"1\"\nb = \"2\"\n[profile.dev.duckdb.settings]\nb = \"3\"\n",
     );
-    let config = resolve(dir.path(), &env_for(dir.path())).unwrap();
+    let config = resolve(&env_for(dir.path())).unwrap();
     assert_eq!(config.settings["a"], "1");
     assert_eq!(config.settings["b"], "3");
 }
@@ -166,7 +165,7 @@ fn environment_overrides_the_files() {
         .with("AUTUMN_DUCKDB__HEALTH_CHECK", "false")
         .with("AUTUMN_DUCKDB__ACCESS_MODE", "read_write")
         .with("AUTUMN_DUCKDB__ALLOWED_DIRECTORIES", "a/, b/ ,");
-    let config = resolve(dir.path(), &env).unwrap();
+    let config = resolve(&env).unwrap();
     assert_eq!(config.path, "env.duckdb");
     assert_eq!(config.max_rows, 7);
     assert!(!config.health_check);
@@ -181,7 +180,7 @@ fn environment_overrides_the_files() {
 fn a_numeric_memory_limit_from_the_environment_stays_text() {
     let dir = tempfile::tempdir().unwrap();
     let env = env_for(dir.path()).with("AUTUMN_DUCKDB__MEMORY_LIMIT", "1000");
-    let config = resolve(dir.path(), &env).unwrap();
+    let config = resolve(&env).unwrap();
     assert_eq!(config.memory_limit.as_deref(), Some("1000"));
 }
 
@@ -190,7 +189,6 @@ fn environment_values_parse_by_type() {
     let dir = tempfile::tempdir().unwrap();
     let base = env_for(dir.path());
     let config = resolve(
-        dir.path(),
         &base
             .clone()
             .with("AUTUMN_DUCKDB__HEALTH_CHECK", "0")
@@ -204,7 +202,7 @@ fn environment_values_parse_by_type() {
         ("AUTUMN_DUCKDB__MAX_ROWS", "many"),
         ("AUTUMN_DUCKDB__MAX_ROWS", "-1"),
     ] {
-        let err = resolve(dir.path(), &base.clone().with(key, value)).unwrap_err();
+        let err = resolve(&base.clone().with(key, value)).unwrap_err();
         assert!(err.to_string().contains(key), "{key}: {err}");
     }
 }
@@ -213,7 +211,7 @@ fn environment_values_parse_by_type() {
 fn unknown_keys_fail() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "autumn.toml", "[duckdb]\nmax_row = 1\n");
-    assert!(resolve(dir.path(), &env_for(dir.path())).is_err());
+    assert!(resolve(&env_for(dir.path())).is_err());
 }
 
 #[test]
@@ -224,35 +222,35 @@ fn a_bad_access_mode_fails() {
         "autumn.toml",
         "[duckdb]\naccess_mode = \"write_only\"\n",
     );
-    assert!(resolve(dir.path(), &env_for(dir.path())).is_err());
+    assert!(resolve(&env_for(dir.path())).is_err());
 }
 
 #[test]
 fn a_section_that_is_not_a_table_fails() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "autumn.toml", "duckdb = 5\n");
-    assert!(resolve(dir.path(), &env_for(dir.path())).is_err());
+    assert!(resolve(&env_for(dir.path())).is_err());
 }
 
 #[test]
 fn bad_toml_fails() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "autumn.toml", "[duckdb\n");
-    assert!(resolve(dir.path(), &env_for(dir.path())).is_err());
+    assert!(resolve(&env_for(dir.path())).is_err());
 }
 
 #[test]
 fn a_config_path_that_is_a_directory_fails() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("autumn.toml")).unwrap();
-    assert!(resolve(dir.path(), &env_for(dir.path())).is_err());
+    assert!(resolve(&env_for(dir.path())).is_err());
 }
 
 #[test]
 fn resolve_validates_the_result() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "autumn.toml", "[duckdb]\nmax_rows = 0\n");
-    let err = resolve(dir.path(), &env_for(dir.path())).unwrap_err();
+    let err = resolve(&env_for(dir.path())).unwrap_err();
     assert!(err.to_string().contains("duckdb.max_rows"), "{err}");
 }
 
@@ -286,7 +284,7 @@ fn only_the_first_profile_file_is_read() {
         "[duckdb]\npath = \"production\"\nmax_rows = 3\n",
     );
     let env = env_for(dir.path()).with("AUTUMN_ENV", "prod");
-    let config = resolve(dir.path(), &env).unwrap();
+    let config = resolve(&env).unwrap();
     assert_eq!(config.path, "prod");
     assert_eq!(config.max_rows, 10_000);
 }
@@ -300,7 +298,7 @@ fn a_release_build_uses_the_prod_profile() {
         "[profile.prod.duckdb]\npath = \"p\"\n",
     );
     let env = env_for(dir.path()).with("AUTUMN_IS_DEBUG", "0");
-    assert_eq!(resolve(dir.path(), &env).unwrap().path, "p");
+    assert_eq!(resolve(&env).unwrap().path, "p");
 }
 
 #[test]
@@ -312,14 +310,14 @@ fn the_canonical_inline_profile_wins_over_its_alias() {
         "[profile.production.duckdb]\npath = \"alias\"\n[profile.prod.duckdb]\npath = \"canonical\"\n",
     );
     let env = env_for(dir.path()).with("AUTUMN_ENV", "prod");
-    assert_eq!(resolve(dir.path(), &env).unwrap().path, "canonical");
+    assert_eq!(resolve(&env).unwrap().path, "canonical");
 }
 
 #[test]
-fn an_environment_path_through_a_value_fails() {
+fn settings_that_are_not_a_table_fail() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "autumn.toml", "[duckdb]\nsettings = 5\n");
-    assert!(resolve(dir.path(), &env_for(dir.path())).is_err());
+    assert!(resolve(&env_for(dir.path())).is_err());
 }
 
 fn invalid(change: impl FnOnce(&mut DuckDbConfig)) -> String {

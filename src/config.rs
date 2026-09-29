@@ -65,6 +65,7 @@ pub enum AccessMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 #[non_exhaustive]
+#[allow(clippy::struct_excessive_bools, reason = "each bool is one TOML key")]
 pub struct DuckDbConfig {
     /// The database file. `:memory:` gives an in-memory database.
     pub path: String,
