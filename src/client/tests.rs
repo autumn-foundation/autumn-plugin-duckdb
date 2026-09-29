@@ -504,6 +504,9 @@ async fn ping_works_when_each_connection_is_busy() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     let start = Instant::now();
     db.ping().await.unwrap();
-    assert!(start.elapsed() < Duration::from_millis(400), "the ping waited for the pool");
+    assert!(
+        start.elapsed() < Duration::from_millis(400),
+        "the ping waited for the pool"
+    );
     slow.await.unwrap().unwrap();
 }

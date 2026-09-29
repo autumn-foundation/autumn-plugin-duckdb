@@ -17,6 +17,7 @@
 //! - [`Lease::release`] sends `ROLLBACK`, then keeps the connection for the next call.
 //!   An unexpected error drops the connection. A dropped lease drops its connection.
 //! - After [`Pool::close`], `acquire` fails and the pool keeps no connections.
+//! - The ping and the checkpoint use the root connection. They do not wait for a permit.
 //!
 //! Each function here that calls DuckDB blocks. Call it on a blocking thread.
 
@@ -181,6 +182,15 @@ impl Pool {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
+    }
+
+    /// Runs `SELECT 1` on the root connection.
+    pub(crate) fn ping(&self) -> Result<(), DuckDbError> {
+        self.root
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .execute_batch("SELECT 1")?;
+        Ok(())
     }
 
     /// Runs `CHECKPOINT` on the root connection.

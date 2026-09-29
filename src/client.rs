@@ -269,10 +269,17 @@ impl DuckDb {
         &self.inner.config
     }
 
-    /// Runs `SELECT 1`. The metrics do not count it.
+    /// Runs `SELECT 1` on the root connection. The metrics do not count it.
+    ///
+    /// The ping does not wait for the pool. A busy pool is not a failed database.
     pub(crate) async fn ping(&self) -> Result<(), DuckDbError> {
-        self.call(false, |conn| Ok(conn.execute_batch("SELECT 1")?))
+        if self.inner.shutting_down.load(Ordering::Acquire) {
+            return Err(DuckDbError::ShuttingDown);
+        }
+        let pool = Arc::clone(&self.inner.pool);
+        tokio::task::spawn_blocking(move || pool.ping())
             .await
+            .map_err(|_| DuckDbError::TaskFailed)?
     }
 
     /// Refuses new calls, interrupts open calls and runs `CHECKPOINT` on a writable file.
