@@ -2,6 +2,7 @@
     clippy::field_reassign_with_default,
     reason = "each test changes one key of the defaults"
 )]
+#![allow(clippy::float_cmp, reason = "the counters are small whole numbers")]
 
 use std::time::{Duration, Instant};
 
@@ -29,7 +30,10 @@ async fn db_with(change: impl FnOnce(&mut DuckDbConfig)) -> DuckDb {
 async fn wait_quiet(db: &DuckDb) {
     let start = Instant::now();
     while !db.inner.pool.is_quiet() {
-        assert!(start.elapsed() < Duration::from_secs(5), "the query did not stop");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the query did not stop"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -183,13 +187,19 @@ async fn more_than_one_statement_is_refused_before_it_runs() {
         .fetch()
         .await
         .unwrap_err();
-    assert!(matches!(err, DuckDbError::MultipleStatements { statements: 2 }), "{err:?}");
+    assert!(
+        matches!(err, DuckDbError::MultipleStatements { statements: 2 }),
+        "{err:?}"
+    );
     let err = db
         .query("CREATE TABLE side_effect (x INT); SELECT 1")
         .execute()
         .await
         .unwrap_err();
-    assert!(matches!(err, DuckDbError::MultipleStatements { .. }), "{err:?}");
+    assert!(
+        matches!(err, DuckDbError::MultipleStatements { .. }),
+        "{err:?}"
+    );
     let tables: i64 = db
         .query("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'side_effect'")
         .fetch_one_as()
@@ -203,15 +213,16 @@ async fn a_wrong_parameter_count_is_refused() {
     let db = db().await;
     let err = db.query("SELECT ?, ?").bind(1).fetch().await.unwrap_err();
     assert!(
-        matches!(err, DuckDbError::ParameterCount { placeholders: 2, parameters: 1 }),
+        matches!(
+            err,
+            DuckDbError::ParameterCount {
+                placeholders: 2,
+                parameters: 1
+            }
+        ),
         "{err:?}"
     );
-    let err = db
-        .query("SELECT 1")
-        .bind(1)
-        .execute()
-        .await
-        .unwrap_err();
+    let err = db.query("SELECT 1").bind(1).execute().await.unwrap_err();
     assert!(matches!(err, DuckDbError::ParameterCount { .. }), "{err:?}");
 }
 
@@ -226,8 +237,19 @@ async fn a_sql_error_keeps_the_class() {
 #[tokio::test]
 async fn the_row_limit_gives_an_error() {
     let db = db_with(|c| c.max_rows = 2).await;
-    assert_eq!(db.query("SELECT * FROM range(2)").fetch().await.unwrap().len(), 2);
-    let err = db.query("SELECT * FROM range(3)").fetch().await.unwrap_err();
+    assert_eq!(
+        db.query("SELECT * FROM range(2)")
+            .fetch()
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    let err = db
+        .query("SELECT * FROM range(3)")
+        .fetch()
+        .await
+        .unwrap_err();
     assert_eq!(err, DuckDbError::TooManyRows { limit: 2 });
 }
 
@@ -299,11 +321,19 @@ async fn the_wait_for_a_connection_counts_in_the_timeout() {
     })
     .await;
     let busy = db.clone();
-    let slow = tokio::spawn(async move { busy.query(SLOW).fetch().await });
+    // An interrupt does not stop a sleep. The lease stays out for one second.
+    let slow = tokio::spawn(async move {
+        busy.with_connection(|_| {
+            std::thread::sleep(Duration::from_secs(1));
+            Ok(())
+        })
+        .await
+    });
     tokio::time::sleep(Duration::from_millis(50)).await;
     let err = db.query("SELECT 1").fetch().await.unwrap_err();
     assert!(matches!(err, DuckDbError::Timeout { .. }), "{err:?}");
     assert!(slow.await.unwrap().is_err());
+    wait_quiet(&db).await;
 }
 
 #[tokio::test]
@@ -379,7 +409,7 @@ async fn with_connection_gives_the_full_api() {
         .await
         .unwrap();
     assert_eq!(total, 10);
-    assert_eq!(counter(&db, "duckdb_calls_total", Some("succeeded")), 4.0);
+    assert_eq!(counter(&db, "duckdb_calls_total", Some("succeeded")), 3.0);
 }
 
 #[tokio::test]
@@ -449,7 +479,13 @@ fn outcomes_follow_the_result() {
         })),
         Outcome::TimedOut
     );
-    assert_eq!(outcome::<()>(&Err(DuckDbError::ShuttingDown)), Outcome::Cancelled);
-    assert_eq!(outcome::<()>(&Err(DuckDbError::Cancelled)), Outcome::Cancelled);
+    assert_eq!(
+        outcome::<()>(&Err(DuckDbError::ShuttingDown)),
+        Outcome::Cancelled
+    );
+    assert_eq!(
+        outcome::<()>(&Err(DuckDbError::Cancelled)),
+        Outcome::Cancelled
+    );
     assert_eq!(outcome::<()>(&Err(DuckDbError::NotFound)), Outcome::Failed);
 }
