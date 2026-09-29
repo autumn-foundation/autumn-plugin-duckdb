@@ -2,6 +2,10 @@
     clippy::field_reassign_with_default,
     reason = "each test changes one key of the defaults"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "the tests hold leases on purpose"
+)]
 
 use std::time::Duration;
 
@@ -12,9 +16,11 @@ fn open_default() -> Connection {
 }
 
 fn setting(conn: &Connection, name: &str) -> String {
-    conn.query_row(&format!("SELECT current_setting('{name}')::VARCHAR"), [], |row| {
-        row.get(0)
-    })
+    conn.query_row(
+        &format!("SELECT current_setting('{name}')::VARCHAR"),
+        [],
+        |row| row.get(0),
+    )
     .unwrap()
 }
 
@@ -112,7 +118,7 @@ fn config_values_reach_duckdb() {
     assert_eq!(setting(&conn, "memory_limit"), "488.2 MiB");
     assert_eq!(setting(&conn, "autoinstall_known_extensions"), "true");
     assert_eq!(setting(&conn, "autoload_known_extensions"), "true");
-    assert_eq!(setting(&conn, "default_order"), "desc");
+    assert_eq!(setting(&conn, "default_order"), "DESC");
 }
 
 #[test]
@@ -154,7 +160,15 @@ fn a_read_only_file_refuses_writes() {
     let path = dir.path().join("ro.duckdb");
     let mut config = DuckDbConfig::default();
     config.path = path.to_str().unwrap().to_owned();
-    drop(open(&config, &[Arc::new(|c: &Connection| c.execute_batch("CREATE TABLE t (x INT)"))]).unwrap());
+    drop(
+        open(
+            &config,
+            &[Arc::new(|c: &Connection| {
+                c.execute_batch("CREATE TABLE t (x INT)")
+            })],
+        )
+        .unwrap(),
+    );
     config.access_mode = crate::config::AccessMode::ReadOnly;
     let conn = open(&config, &[]).unwrap();
     conn.execute_batch("SELECT * FROM t").unwrap();
@@ -200,7 +214,10 @@ async fn a_released_connection_is_used_again() {
         .unwrap();
     lease.release();
     let lease = pool.acquire().await.unwrap();
-    lease.connection().execute_batch("SELECT * FROM mine").unwrap();
+    lease
+        .connection()
+        .execute_batch("SELECT * FROM mine")
+        .unwrap();
 }
 
 #[tokio::test]
