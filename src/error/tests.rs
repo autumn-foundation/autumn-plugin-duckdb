@@ -10,10 +10,16 @@ fn database(message: &str) -> DuckDbError {
 
 #[test]
 fn the_class_is_the_text_before_error() {
-    assert_eq!(class_of("Catalog Error: Table with name x does not exist!"), "Catalog");
+    assert_eq!(
+        class_of("Catalog Error: Table with name x does not exist!"),
+        "Catalog"
+    );
     assert_eq!(class_of("Invalid Input Error: bad"), "Invalid Input");
     assert_eq!(class_of("INTERRUPT Error: Interrupted!"), "INTERRUPT");
-    assert_eq!(class_of("TransactionContext Error: Conflict"), "TransactionContext");
+    assert_eq!(
+        class_of("TransactionContext Error: Conflict"),
+        "TransactionContext"
+    );
 }
 
 #[test]
@@ -79,8 +85,14 @@ fn errors_map_to_http_status() {
         with_class("TransactionContext", "no transaction is active").status(),
         StatusCode::INTERNAL_SERVER_ERROR
     );
-    assert_eq!(DuckDbError::Cancelled.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(DuckDbError::ShuttingDown.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        DuckDbError::Cancelled.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        DuckDbError::ShuttingDown.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
     assert_eq!(
         with_class("Catalog", "x").status(),
         StatusCode::INTERNAL_SERVER_ERROR

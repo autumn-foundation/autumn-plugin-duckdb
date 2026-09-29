@@ -92,14 +92,30 @@ pub enum DuckDbError {
 
 /// Gives the class of a DuckDB message.
 pub(crate) fn class_of(message: &str) -> &str {
-    let _ = message;
-    ""
+    let first_line = message.lines().next().unwrap_or_default();
+    first_line
+        .split_once(" Error:")
+        .map(|(class, _)| class)
+        .filter(|class| {
+            !class.is_empty()
+                && class
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b' ')
+        })
+        .unwrap_or("Unknown")
 }
 
 impl From<duckdb::Error> for DuckDbError {
     fn from(err: duckdb::Error) -> Self {
-        let _ = err;
-        Self::Cancelled
+        let class = match &err {
+            duckdb::Error::DuckDBFailure(_, Some(message)) => class_of(message),
+            duckdb::Error::DuckDBFailure(_, None) => "Unknown",
+            _ => "Client",
+        };
+        Self::Database {
+            class: class.to_owned(),
+            detail: err.to_string(),
+        }
     }
 }
 
@@ -109,25 +125,43 @@ impl DuckDbError {
     /// The message can hold SQL text and key values. Do not show it to users.
     #[must_use]
     pub fn detail(&self) -> Option<&str> {
-        None
+        match self {
+            Self::Database { detail, .. } => Some(detail),
+            _ => None,
+        }
     }
 
     /// The DuckDB error class of a [`DuckDbError::Database`] error.
     #[must_use]
     pub fn class(&self) -> Option<&str> {
-        None
+        match self {
+            Self::Database { class, .. } => Some(class),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` for a DuckDB write conflict. Another transaction changed the same rows.
+    fn is_conflict(&self) -> bool {
+        matches!(self, Self::Database { class, detail }
+            if class == "TransactionContext" && detail.to_ascii_lowercase().contains("conflict"))
     }
 
     /// Returns `true` if a retry of the same call can succeed.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        false
+        matches!(self, Self::Timeout { .. }) || self.is_conflict()
     }
 
     /// The HTTP status for this error.
     #[must_use]
     pub fn status(&self) -> StatusCode {
-        StatusCode::OK
+        match self {
+            Self::Timeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+            Self::Cancelled | Self::ShuttingDown => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Database { class, .. } if class == "Constraint" => StatusCode::CONFLICT,
+            _ if self.is_conflict() => StatusCode::SERVICE_UNAVAILABLE,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        }
     }
 
     /// Converts to an [`AutumnError`] with [`status`](Self::status).
@@ -136,7 +170,8 @@ impl DuckDbError {
     /// Autumn shows server error details only in development.
     #[must_use]
     pub fn into_autumn(self) -> AutumnError {
-        AutumnError::internal_server_error(self)
+        let status = self.status();
+        AutumnError::internal_server_error(self).with_status(status)
     }
 }
 
