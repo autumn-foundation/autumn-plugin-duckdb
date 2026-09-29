@@ -52,6 +52,28 @@ fn counter(db: &DuckDb, name: &str, outcome: Option<&str>) -> f64 {
         .value
 }
 
+/// Holds the only connection until the test sends on the sender. An interrupt does not stop it.
+async fn hold(
+    db: &DuckDb,
+) -> (
+    tokio::task::JoinHandle<Result<(), DuckDbError>>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let busy = db.clone();
+    let holder = tokio::spawn(async move {
+        busy.with_connection(move |_| {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+            Ok(())
+        })
+        .await
+    });
+    entered_rx.await.unwrap();
+    (holder, release_tx)
+}
+
 #[derive(Debug, Deserialize, PartialEq)]
 struct Item {
     id: i64,
@@ -338,6 +360,45 @@ async fn the_byte_limit_gives_an_error() {
 }
 
 #[tokio::test]
+async fn a_query_can_override_the_row_limit_and_the_timeout() {
+    let db = db_with(|c| c.max_rows = 2).await;
+    let rows = db.query("SELECT * FROM range(5)").max_rows(5).fetch().await;
+    assert_eq!(rows.unwrap().len(), 5);
+    let err = db
+        .query("SELECT * FROM range(5)")
+        .max_rows(4)
+        .fetch()
+        .await
+        .unwrap_err();
+    assert_eq!(err, DuckDbError::TooManyRows { limit: 4 });
+    let err = db
+        .query(SLOW)
+        .timeout(Duration::from_millis(50))
+        .fetch()
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        DuckDbError::Timeout {
+            timeout: Duration::from_millis(50)
+        }
+    );
+    wait_quiet(&db).await;
+}
+
+#[tokio::test]
+async fn a_huge_query_timeout_is_capped_at_one_day() {
+    let db = db().await;
+    let rows = db
+        .query("SELECT 1")
+        .timeout(Duration::MAX)
+        .fetch()
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
+#[tokio::test]
 async fn the_byte_limit_counts_all_rows() {
     let db = db_with(|c| c.max_result_bytes = 40).await;
     db.query("SELECT 'xx' FROM range(2)").fetch().await.unwrap();
@@ -396,12 +457,10 @@ async fn a_timeout_interrupts_the_query() {
 
 #[tokio::test]
 async fn an_interrupt_never_reaches_the_next_call() {
-    let db = db_with(|c| {
-        c.timeout_ms = 100;
-        c.max_connections = 1;
-    })
-    .await;
-    assert!(db.query(SLOW).fetch().await.is_err());
+    let db = db_with(|c| c.max_connections = 1).await;
+    let dropped = tokio::time::timeout(Duration::from_millis(100), db.query(SLOW).fetch()).await;
+    assert!(dropped.is_err(), "the slow query must still run");
+    wait_quiet(&db).await;
     for _ in 0..50 {
         db.query("SELECT 1").fetch().await.unwrap();
     }
@@ -424,24 +483,22 @@ async fn an_interrupt_before_the_query_starts_repeats() {
 
 #[tokio::test]
 async fn the_wait_for_a_connection_counts_in_the_timeout() {
-    let db = db_with(|c| {
-        c.timeout_ms = 300;
-        c.max_connections = 1;
-    })
-    .await;
-    let busy = db.clone();
-    // An interrupt does not stop a sleep. The lease stays out for one second.
-    let slow = tokio::spawn(async move {
-        busy.with_connection(|_| {
-            std::thread::sleep(Duration::from_secs(1));
-            Ok(())
-        })
+    let db = db_with(|c| c.max_connections = 1).await;
+    let (holder, release) = hold(&db).await;
+    let err = db
+        .query("SELECT 1")
+        .timeout(Duration::from_millis(300))
+        .fetch()
         .await
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let err = db.query("SELECT 1").fetch().await.unwrap_err();
-    assert!(matches!(err, DuckDbError::Timeout { .. }), "{err:?}");
-    assert!(slow.await.unwrap().is_err());
+        .unwrap_err();
+    assert_eq!(
+        err,
+        DuckDbError::Timeout {
+            timeout: Duration::from_millis(300)
+        }
+    );
+    release.send(()).unwrap();
+    let _ = holder.await.unwrap();
     wait_quiet(&db).await;
 }
 
@@ -602,22 +659,11 @@ fn outcomes_follow_the_result() {
 #[tokio::test]
 async fn ping_works_when_each_connection_is_busy() {
     let db = db_with(|c| c.max_connections = 1).await;
-    let busy = db.clone();
-    let slow = tokio::spawn(async move {
-        busy.with_connection(|_| {
-            std::thread::sleep(Duration::from_millis(500));
-            Ok(())
-        })
-        .await
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let start = Instant::now();
-    db.ping().await.unwrap();
-    assert!(
-        start.elapsed() < Duration::from_millis(400),
-        "the ping waited for the pool"
-    );
-    slow.await.unwrap().unwrap();
+    let (holder, release) = hold(&db).await;
+    let ping = tokio::time::timeout(Duration::from_secs(5), db.ping()).await;
+    release.send(()).unwrap();
+    ping.expect("the ping waited for the pool").unwrap();
+    holder.await.unwrap().unwrap();
 }
 
 #[test]

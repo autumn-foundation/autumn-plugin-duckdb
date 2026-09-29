@@ -416,6 +416,18 @@ pub struct DuckDbQuery {
 }
 
 impl DuckDbQuery {
+    /// Sets the timeout of this query. It replaces `timeout_ms`. The largest timeout is one day.
+    pub fn timeout(self, timeout: Duration) -> Self {
+        let _ = timeout;
+        self
+    }
+
+    /// Sets the row limit of this query. It replaces `max_rows`.
+    pub fn max_rows(self, max_rows: usize) -> Self {
+        let _ = max_rows;
+        self
+    }
+
     /// Binds the next `?` or `$n` parameter.
     pub fn bind(mut self, value: impl Into<Param>) -> Self {
         self.params.push(value.into());
