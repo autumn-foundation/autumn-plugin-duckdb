@@ -208,7 +208,7 @@ impl Lease {
         } = self;
         match conn.execute_batch("ROLLBACK") {
             Ok(()) => {
-                tracing::warn!("a DuckDB call left a transaction open: the plugin rolled it back")
+                tracing::warn!("a DuckDB call left a transaction open: the plugin rolled it back");
             }
             Err(err) if no_transaction(&err) => {}
             Err(_) => return,
