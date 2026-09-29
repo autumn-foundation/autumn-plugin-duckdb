@@ -533,7 +533,8 @@ impl std::fmt::Debug for DuckDbQuery {
 fn check_statements(sql: &str) -> Result<(), DuckDbError> {
     match statement::count(sql) {
         Some(statements @ 2..) => Err(DuckDbError::MultipleStatements { statements }),
-        _ => Ok(()),
+        Some(_) => Ok(()),
+        None => Err(DuckDbError::OpenLiteral),
     }
 }
 

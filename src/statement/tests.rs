@@ -192,3 +192,37 @@ proptest! {
         prop_assert_eq!(count(&sql), Some(duckdb_count(&sql)), "{}", sql);
     }
 }
+
+/// Gives the number of `INSERT INTO log` statements that DuckDB runs for `sql`.
+///
+/// A parse error runs nothing. A later error can come after earlier statements ran.
+fn duckdb_side_effects(sql: &str) -> usize {
+    ORACLE.with(|conn| {
+        conn.execute_batch("DELETE FROM log").unwrap();
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            let _ = stmt.execute([]);
+        }
+        conn.query_row("SELECT count(*) FROM log", [], |row| row.get(0))
+            .unwrap()
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    /// Safety: the count is never lower than the statements that DuckDB runs.
+    #[test]
+    fn the_count_never_misses_a_statement_that_duckdb_runs(
+        fragments in prop::collection::vec("[ '\"$aEe\\\\/*;\\n\\r\\t\\-é1x]{0,8}", 1..4),
+    ) {
+        let sql = fragments
+            .iter()
+            .map(|fragment| format!("INSERT INTO log SELECT 1 {fragment}"))
+            .collect::<Vec<_>>()
+            .join(";");
+        let ran = duckdb_side_effects(&sql);
+        if let Some(counted) = count(&sql) {
+            prop_assert!(counted >= ran, "counted {} but DuckDB ran {}: {:?}", counted, ran, sql);
+        }
+    }
+}
