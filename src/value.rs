@@ -72,9 +72,8 @@ pub enum Value {
 }
 
 impl Value {
-    /// The size of the value for the byte limit.
-    #[must_use]
-    pub fn size(&self) -> usize {
+    /// The estimated size in bytes for the byte limit. See the module contract.
+    pub(crate) fn size(&self) -> usize {
         let content = match self {
             Self::Decimal(v)
             | Self::Text(v)
@@ -146,8 +145,9 @@ impl Value {
     }
 }
 
-impl From<duckdb::types::Value> for Value {
-    fn from(raw: duckdb::types::Value) -> Self {
+impl Value {
+    /// Converts a DuckDB value without its column type. See the module contract.
+    pub(crate) fn from_raw(raw: duckdb::types::Value) -> Self {
         use duckdb::types::Value as Raw;
         match raw {
             Raw::Null => Self::Null,
@@ -180,22 +180,22 @@ impl From<duckdb::types::Value> for Value {
                 nanos,
             },
             Raw::List(items) | Raw::Array(items) => {
-                Self::List(items.into_iter().map(Self::from).collect())
+                Self::List(items.into_iter().map(Self::from_raw).collect())
             }
             // `OrderedMap` has no owned iterator. The entries are cloned.
             Raw::Struct(fields) => Self::Struct(
                 fields
                     .iter()
-                    .map(|(k, v)| (k.clone(), Self::from(v.clone())))
+                    .map(|(k, v)| (k.clone(), Self::from_raw(v.clone())))
                     .collect(),
             ),
             Raw::Map(entries) => Self::Map(
                 entries
                     .iter()
-                    .map(|(k, v)| (Self::from(k.clone()), Self::from(v.clone())))
+                    .map(|(k, v)| (Self::from_raw(k.clone()), Self::from_raw(v.clone())))
                     .collect(),
             ),
-            Raw::Union(inner) => Self::from(*inner),
+            Raw::Union(inner) => Self::from_raw(*inner),
             other => Self::Text(format!("{other:?}")),
         }
     }
@@ -299,7 +299,7 @@ impl Value {
                     })
                     .collect(),
             ),
-            (raw, _) => Self::from(raw),
+            (raw, _) => Self::from_raw(raw),
         }
     }
 }
@@ -434,9 +434,8 @@ impl Row {
         self.values.get(index)
     }
 
-    /// Gives the size of the row for the byte limit.
-    #[must_use]
-    pub fn size(&self) -> usize {
+    /// The estimated size in bytes for the byte limit.
+    pub(crate) fn size(&self) -> usize {
         self.values.iter().map(Value::size).sum()
     }
 }

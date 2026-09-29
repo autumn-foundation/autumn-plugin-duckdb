@@ -300,8 +300,9 @@ impl DuckDb {
 
     /// Refuses new calls, interrupts open calls and runs `CHECKPOINT` on a writable file.
     ///
+    /// The plugin calls it in the Autumn shutdown hook. Call it for a handle from [`DuckDb::open`].
     /// A second call waits for the first one to end.
-    pub(crate) async fn shutdown(&self) {
+    pub async fn shutdown(&self) {
         self.inner
             .shutdown_done
             .get_or_init(|| async {
@@ -504,6 +505,15 @@ impl DuckDbQuery {
             Some(row) => Ok(Some(row.decode()?)),
             None => Ok(None),
         }
+    }
+
+    /// Runs the query and gives the first row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DuckDbError::NotFound`] if there is no row, or another [`DuckDbError`].
+    pub async fn fetch_one(self) -> Result<Row, DuckDbError> {
+        self.fetch_optional().await?.ok_or(DuckDbError::NotFound)
     }
 
     /// Runs the query and decodes the first row into `T`.

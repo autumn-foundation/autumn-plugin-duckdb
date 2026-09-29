@@ -7,7 +7,7 @@ use super::*;
 fn select(sql: &str) -> Value {
     let conn = duckdb::Connection::open_in_memory().unwrap();
     let raw: Raw = conn.query_row(sql, [], |row| row.get(0)).unwrap();
-    Value::from(raw)
+    Value::from_raw(raw)
 }
 
 fn text(value: &str) -> Value {
@@ -16,28 +16,31 @@ fn text(value: &str) -> Value {
 
 #[test]
 fn integers_convert_by_sign_and_width() {
-    assert_eq!(Value::from(Raw::TinyInt(-1)), Value::Int(-1));
-    assert_eq!(Value::from(Raw::SmallInt(-2)), Value::Int(-2));
-    assert_eq!(Value::from(Raw::Int(-3)), Value::Int(-3));
-    assert_eq!(Value::from(Raw::BigInt(-4)), Value::Int(-4));
-    assert_eq!(Value::from(Raw::UTinyInt(1)), Value::UInt(1));
-    assert_eq!(Value::from(Raw::USmallInt(2)), Value::UInt(2));
-    assert_eq!(Value::from(Raw::UInt(3)), Value::UInt(3));
-    assert_eq!(Value::from(Raw::UBigInt(4)), Value::UInt(4));
-    assert_eq!(Value::from(Raw::HugeInt(-5)), Value::HugeInt(-5));
-    assert_eq!(Value::from(Raw::UHugeInt(5)), Value::UHugeInt(5));
+    assert_eq!(Value::from_raw(Raw::TinyInt(-1)), Value::Int(-1));
+    assert_eq!(Value::from_raw(Raw::SmallInt(-2)), Value::Int(-2));
+    assert_eq!(Value::from_raw(Raw::Int(-3)), Value::Int(-3));
+    assert_eq!(Value::from_raw(Raw::BigInt(-4)), Value::Int(-4));
+    assert_eq!(Value::from_raw(Raw::UTinyInt(1)), Value::UInt(1));
+    assert_eq!(Value::from_raw(Raw::USmallInt(2)), Value::UInt(2));
+    assert_eq!(Value::from_raw(Raw::UInt(3)), Value::UInt(3));
+    assert_eq!(Value::from_raw(Raw::UBigInt(4)), Value::UInt(4));
+    assert_eq!(Value::from_raw(Raw::HugeInt(-5)), Value::HugeInt(-5));
+    assert_eq!(Value::from_raw(Raw::UHugeInt(5)), Value::UHugeInt(5));
 }
 
 #[test]
 fn scalars_convert() {
-    assert_eq!(Value::from(Raw::Null), Value::Null);
-    assert_eq!(Value::from(Raw::Boolean(true)), Value::Bool(true));
-    assert_eq!(Value::from(Raw::Float(0.5)), Value::Float(0.5));
-    assert_eq!(Value::from(Raw::Double(0.25)), Value::Float(0.25));
-    assert_eq!(Value::from(Raw::Text("a".into())), text("a"));
-    assert_eq!(Value::from(Raw::Enum("e".into())), text("e"));
-    assert_eq!(Value::from(Raw::Blob(vec![1])), Value::Blob(vec![1]));
-    assert_eq!(Value::from(Raw::Geometry(vec![2])), Value::Blob(vec![2]));
+    assert_eq!(Value::from_raw(Raw::Null), Value::Null);
+    assert_eq!(Value::from_raw(Raw::Boolean(true)), Value::Bool(true));
+    assert_eq!(Value::from_raw(Raw::Float(0.5)), Value::Float(0.5));
+    assert_eq!(Value::from_raw(Raw::Double(0.25)), Value::Float(0.25));
+    assert_eq!(Value::from_raw(Raw::Text("a".into())), text("a"));
+    assert_eq!(Value::from_raw(Raw::Enum("e".into())), text("e"));
+    assert_eq!(Value::from_raw(Raw::Blob(vec![1])), Value::Blob(vec![1]));
+    assert_eq!(
+        Value::from_raw(Raw::Geometry(vec![2])),
+        Value::Blob(vec![2])
+    );
 }
 
 #[test]
@@ -55,23 +58,23 @@ fn decimals_become_exact_text() {
 #[test]
 fn temporal_values_become_iso_text() {
     assert_eq!(
-        Value::from(Raw::Date32(0)),
+        Value::from_raw(Raw::Date32(0)),
         Value::Date("1970-01-01".into())
     );
     assert_eq!(
-        Value::from(Raw::Time64(TimeUnit::Microsecond, 1_500_000)),
+        Value::from_raw(Raw::Time64(TimeUnit::Microsecond, 1_500_000)),
         Value::Time("00:00:01.5".into())
     );
     assert_eq!(
-        Value::from(Raw::Timestamp(TimeUnit::Second, 60)),
+        Value::from_raw(Raw::Timestamp(TimeUnit::Second, 60)),
         Value::Timestamp("1970-01-01T00:01:00".into())
     );
     assert_eq!(
-        Value::from(Raw::Timestamp(TimeUnit::Millisecond, 1)),
+        Value::from_raw(Raw::Timestamp(TimeUnit::Millisecond, 1)),
         Value::Timestamp("1970-01-01T00:00:00.001".into())
     );
     assert_eq!(
-        Value::from(Raw::Timestamp(TimeUnit::Nanosecond, 1)),
+        Value::from_raw(Raw::Timestamp(TimeUnit::Nanosecond, 1)),
         Value::Timestamp("1970-01-01T00:00:00.000000001".into())
     );
     assert_eq!(
@@ -112,7 +115,7 @@ fn nested_values_convert() {
     );
     assert_eq!(select("SELECT union_value(n := 2)"), Value::Int(2));
     assert_eq!(
-        Value::from(Raw::Struct(OrderedMap::from(vec![(
+        Value::from_raw(Raw::Struct(OrderedMap::from(vec![(
             "u".to_owned(),
             Raw::Union(Box::new(Raw::Null))
         )]))),
