@@ -13,7 +13,9 @@ async fn started(config: DuckDbConfig) -> (Arc<Shared>, DuckDb) {
 
 #[tokio::test]
 async fn a_check_before_startup_is_down() {
-    let output = DatabaseCheck::new(Arc::new(Shared::default())).check().await;
+    let output = DatabaseCheck::new(Arc::new(Shared::default()))
+        .check()
+        .await;
     assert_eq!(output.status, HealthStatus::Down);
     assert_eq!(output.details["state"], "not started");
 }

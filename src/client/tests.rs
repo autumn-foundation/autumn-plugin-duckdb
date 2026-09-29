@@ -510,3 +510,24 @@ async fn ping_works_when_each_connection_is_busy() {
     );
     slow.await.unwrap().unwrap();
 }
+
+#[test]
+fn a_timed_out_query_stops_when_the_runtime_stops() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let db = db_with(|c| c.timeout_ms = 50).await;
+            assert!(db.query(SLOW).fetch().await.is_err());
+        });
+        // The drop waits for the blocking tasks.
+        drop(runtime);
+        sender.send(()).unwrap();
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the runtime did not stop: the query still runs");
+}

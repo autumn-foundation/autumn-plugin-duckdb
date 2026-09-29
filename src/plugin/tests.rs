@@ -18,19 +18,28 @@ fn an_explicit_config_declares_no_section() {
 #[test]
 fn resolve_applies_changes_then_validates() {
     let source = Source::Explicit(Box::new(DuckDbConfig::default()));
-    let config = DuckDbPlugin::resolve(&source, vec![Box::new(|c: &mut DuckDbConfig| c.max_rows = 3)])
-        .unwrap();
+    let config = DuckDbPlugin::resolve(
+        &source,
+        vec![Box::new(|c: &mut DuckDbConfig| c.max_rows = 3)],
+    )
+    .unwrap();
     assert_eq!(config.max_rows, 3);
-    let err = DuckDbPlugin::resolve(&source, vec![Box::new(|c: &mut DuckDbConfig| c.max_rows = 0)])
-        .unwrap_err();
+    let err = DuckDbPlugin::resolve(
+        &source,
+        vec![Box::new(|c: &mut DuckDbConfig| c.max_rows = 0)],
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("duckdb.max_rows"), "{err}");
 }
 
 #[test]
 fn a_bad_section_names_the_section() {
     let source = Source::Section("analytics".to_owned());
-    let err = DuckDbPlugin::resolve(&source, vec![Box::new(|c: &mut DuckDbConfig| c.max_rows = 0)])
-        .unwrap_err();
+    let err = DuckDbPlugin::resolve(
+        &source,
+        vec![Box::new(|c: &mut DuckDbConfig| c.max_rows = 0)],
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("analytics.max_rows"), "{err}");
 }
 
