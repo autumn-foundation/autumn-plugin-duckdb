@@ -253,3 +253,22 @@ fn a_row_serializes_as_a_map() {
         json!({"id": 1, "name": "ada"})
     );
 }
+
+#[test]
+fn a_map_with_a_nested_key_serializes_as_entries() {
+    let map = Value::Map(vec![(Value::List(vec![Value::Int(1)]), text("a"))]);
+    assert_eq!(
+        serde_json::to_value(&map).unwrap(),
+        json!([{"key": [1], "value": "a"}])
+    );
+    let blob_key = Value::Map(vec![(Value::Blob(vec![1]), Value::Int(2))]);
+    assert_eq!(
+        serde_json::to_value(&blob_key).unwrap(),
+        json!([{"key": [1], "value": 2}])
+    );
+    let scalar_keys = Value::Map(vec![(Value::Int(1), text("a"))]);
+    assert_eq!(
+        serde_json::to_value(&scalar_keys).unwrap(),
+        json!({"1": "a"})
+    );
+}

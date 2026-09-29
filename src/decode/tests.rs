@@ -295,3 +295,31 @@ fn an_unknown_field_error_hides_the_key() {
     let err = value.decode::<Only>().unwrap_err();
     assert!(!err.to_string().contains("alice"), "{err}");
 }
+
+#[test]
+fn whole_decimals_decode_into_integers() {
+    assert_eq!(Value::Decimal("5".into()).decode::<i64>().unwrap(), 5);
+    assert_eq!(
+        Value::Decimal("-12.00".into()).decode::<i32>().unwrap(),
+        -12
+    );
+    assert_eq!(Value::Decimal("7.0".into()).decode::<u64>().unwrap(), 7);
+    assert!(Value::Decimal("5.5".into()).decode::<i64>().is_err());
+    assert!(Value::Decimal("300".into()).decode::<u8>().is_err());
+}
+
+#[test]
+fn a_one_column_list_or_map_row_decodes_into_its_value() {
+    let list = row(&[(
+        "l",
+        Value::List(vec![Value::Float(1.5), Value::Float(2.25)]),
+    )]);
+    assert_eq!(list.decode::<Vec<f64>>().unwrap(), vec![1.5, 2.25]);
+    let map = row(&[("m", Value::Map(vec![(text("a"), Value::Int(1))]))]);
+    let decoded: HashMap<String, i64> = map.decode().unwrap();
+    assert_eq!(decoded, HashMap::from([("a".into(), 1)]));
+    let scalar = row(&[("n", Value::Int(3))]);
+    assert_eq!(scalar.decode::<Vec<i64>>().unwrap(), vec![3]);
+    let by_name: HashMap<String, i64> = scalar.decode().unwrap();
+    assert_eq!(by_name, HashMap::from([("n".into(), 3)]));
+}

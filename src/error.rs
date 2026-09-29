@@ -48,6 +48,15 @@ pub enum DuckDbError {
     /// The SQL text ends in an open literal or block comment. The plugin cannot count its statements.
     #[error("the SQL ends in an open literal or comment")]
     OpenLiteral,
+    /// A result column has a type that the plugin cannot read without data loss.
+    #[error("column `{column}` has the type {type_name}: cast it to VARCHAR in the SQL")]
+    #[non_exhaustive]
+    UnsupportedType {
+        /// The column name.
+        column: String,
+        /// The DuckDB type name.
+        type_name: String,
+    },
     /// The number of parameters is not the number of placeholders.
     #[error("the SQL has {placeholders} placeholders, but the query has {parameters} parameters")]
     #[non_exhaustive]
@@ -112,6 +121,11 @@ impl std::fmt::Debug for DuckDbError {
                 .field("statements", statements)
                 .finish(),
             Self::OpenLiteral => f.write_str("OpenLiteral"),
+            Self::UnsupportedType { column, type_name } => f
+                .debug_struct("UnsupportedType")
+                .field("column", column)
+                .field("type_name", type_name)
+                .finish(),
             Self::ParameterCount {
                 placeholders,
                 parameters,

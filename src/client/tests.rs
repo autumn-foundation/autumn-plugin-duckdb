@@ -686,3 +686,95 @@ fn a_timed_out_query_stops_when_the_runtime_stops() {
         .recv_timeout(Duration::from_secs(10))
         .expect("the runtime did not stop: the query still runs");
 }
+
+#[tokio::test]
+async fn timestamps_with_a_time_zone_end_with_z() {
+    let db = db().await;
+    let row = db
+        .query(
+            "SELECT TIMESTAMPTZ '2024-01-01 12:00:00+05' AS tz,
+                    [TIMESTAMPTZ '2024-01-01 12:00:00+05'] AS list,
+                    TIMESTAMP '2024-01-01 12:00:00' AS plain",
+        )
+        .fetch_optional()
+        .await
+        .unwrap()
+        .unwrap();
+    let tz = Value::Timestamp("2024-01-01T07:00:00Z".into());
+    assert_eq!(row.get("tz"), Some(&tz));
+    assert_eq!(row.get("list"), Some(&Value::List(vec![tz])));
+    assert_eq!(
+        row.get("plain"),
+        Some(&Value::Timestamp("2024-01-01T12:00:00".into()))
+    );
+}
+
+#[tokio::test]
+async fn nested_128_bit_and_decimal_values_keep_their_type() {
+    let db = db().await;
+    let row = db
+        .query(
+            "SELECT [340282366920938463463374607431768211455::UHUGEINT] AS big,
+                    [5::DECIMAL(38,0)] AS whole,
+                    {'d': -0.05::DECIMAL(10,2)} AS s,
+                    MAP {1.5::DECIMAL(4,1): 2} AS m",
+        )
+        .fetch_optional()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.get("big"),
+        Some(&Value::List(vec![Value::UHugeInt(u128::MAX)]))
+    );
+    assert_eq!(
+        row.get("whole"),
+        Some(&Value::List(vec![Value::Decimal("5".into())]))
+    );
+    assert_eq!(
+        row.get("s"),
+        Some(&Value::Struct(vec![(
+            "d".into(),
+            Value::Decimal("-0.05".into())
+        )]))
+    );
+    assert_eq!(
+        row.get("m"),
+        Some(&Value::Map(vec![(
+            Value::Decimal("1.5".into()),
+            Value::Int(2)
+        )]))
+    );
+}
+
+#[tokio::test]
+async fn types_that_lose_data_are_refused() {
+    let db = db().await;
+    for (sql, type_name) in [
+        ("SELECT '10:00'::TIME_NS AS c", "TIME_NS"),
+        ("SELECT TIMETZ '12:00:00+05' AS c", "TIMETZ"),
+        ("SELECT '101'::BIT AS c", "BIT"),
+        (
+            "SELECT 12345678901234567890123456789012345678901::BIGNUM AS c",
+            "BIGNUM",
+        ),
+        ("SELECT ['10:00'::TIME_NS] AS c", "TIME_NS"),
+        ("SELECT {'a': TIMETZ '12:00:00+05'} AS c", "TIMETZ"),
+    ] {
+        let err = db.query(sql).fetch().await.unwrap_err();
+        assert_eq!(
+            err,
+            DuckDbError::UnsupportedType {
+                column: "c".into(),
+                type_name: type_name.into()
+            },
+            "{sql}"
+        );
+    }
+    let rows = db
+        .query("SELECT CAST(TIMETZ '12:00:00+05' AS VARCHAR) AS c")
+        .fetch()
+        .await
+        .unwrap();
+    assert_eq!(rows[0].get("c"), Some(&Value::Text("12:00:00+05".into())));
+}
