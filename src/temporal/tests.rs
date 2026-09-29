@@ -111,3 +111,22 @@ proptest! {
         prop_assert_eq!(timestamp_text(Unit::Micros, micros), expected.replacen(' ', "T", 1));
     }
 }
+
+#[test]
+fn century_leap_rules_hold() {
+    assert_eq!(date_text(-25_508), "1900-03-01");
+    assert_eq!(date_text(11_016), "2000-02-29");
+    assert_eq!(date_text(47_541), "2100-03-01");
+}
+
+#[test]
+fn extreme_timestamps_give_exact_text() {
+    assert_eq!(
+        timestamp_text(Unit::Micros, -i64::MAX + 1),
+        "-290308-12-21T19:59:05.224194"
+    );
+    assert_eq!(
+        timestamp_text(Unit::Micros, i64::MAX - 1),
+        "+294247-01-10T04:00:54.775806"
+    );
+}

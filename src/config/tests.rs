@@ -332,6 +332,7 @@ fn validation_names_the_bad_key() {
     assert!(invalid(|c| c.path = "  ".into()).contains("duckdb.path"));
     assert!(invalid(|c| c.path = "md:my_db".into()).contains("duckdb.path"));
     assert!(invalid(|c| c.path = "MotherDuck:x".into()).contains("duckdb.path"));
+    assert!(invalid(|c| c.path = "MD:x".into()).contains("duckdb.path"));
     assert!(invalid(|c| c.access_mode = AccessMode::ReadOnly).contains("duckdb.access_mode"));
     assert!(invalid(|c| c.threads = Some(0)).contains("duckdb.threads"));
     assert!(invalid(|c| c.memory_limit = Some(" ".into())).contains("duckdb.memory_limit"));
@@ -343,6 +344,10 @@ fn validation_names_the_bad_key() {
     assert!(invalid(|c| c.max_result_bytes = 0).contains("duckdb.max_result_bytes"));
     assert!(
         invalid(|c| c.allowed_directories = vec![String::new()])
+            .contains("duckdb.allowed_directories")
+    );
+    assert!(
+        invalid(|c| c.allowed_directories = vec!["  ".into()])
             .contains("duckdb.allowed_directories")
     );
 }
@@ -365,6 +370,7 @@ fn settings_refuse_managed_and_bad_keys() {
         "search_path",
         "schema",
         "Threads",
+        "1abc",
         "",
         "bad key",
         "a;b",
@@ -427,4 +433,50 @@ fn each_field_but_settings_has_an_environment_variable() {
     let mut leaves: Vec<String> = LEAVES.iter().map(|(path, _)| (*path).to_owned()).collect();
     leaves.sort();
     assert_eq!(fields, leaves);
+}
+
+#[test]
+fn every_managed_setting_is_refused() {
+    for key in MANAGED_SETTINGS {
+        let message = invalid(|c| {
+            c.settings.insert((*key).to_owned(), "1".to_owned());
+        });
+        assert!(message.contains(key), "{key}: {message}");
+    }
+}
+
+#[test]
+fn every_duckdb_alias_of_a_managed_setting_is_refused() {
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT name, aliases FROM duckdb_settings()")
+        .unwrap();
+    let rows: Vec<(String, Vec<String>)> = stmt
+        .query_map([], |row| {
+            let aliases: duckdb::types::Value = row.get(1)?;
+            let aliases = match aliases {
+                duckdb::types::Value::List(items) => items
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        duckdb::types::Value::Text(text) => Some(text),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            Ok((row.get(0)?, aliases))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for (name, aliases) in rows {
+        if MANAGED_SETTINGS.contains(&name.as_str()) {
+            for alias in aliases {
+                assert!(
+                    MANAGED_SETTINGS.contains(&alias.as_str()),
+                    "{name}: {alias}"
+                );
+            }
+        }
+    }
 }

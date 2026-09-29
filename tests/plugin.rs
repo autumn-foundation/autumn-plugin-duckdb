@@ -158,3 +158,28 @@ async fn a_standalone_handle_can_shut_down() {
         DuckDbError::ShuttingDown
     );
 }
+
+/// Builds the app and gives the text of the startup panic.
+fn boot_panic(plugin: DuckDbPlugin) -> String {
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app(plugin)))
+        .err()
+        .expect("the boot must fail");
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_boot_error_names_the_key_or_the_class_only() {
+    let text = boot_panic(DuckDbPlugin::new().configure(|c| c.max_connections = 0));
+    assert!(text.contains("max_connections"), "{text}");
+    let text = boot_panic(
+        DuckDbPlugin::new()
+            .config(DuckDbConfig::default())
+            .setup(|conn| conn.execute_batch("SELECT * FROM secret_table_name")),
+    );
+    assert!(text.contains("Catalog"), "{text}");
+    assert!(!text.contains("secret_table_name"), "{text}");
+}

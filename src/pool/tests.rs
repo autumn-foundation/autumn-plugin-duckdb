@@ -260,3 +260,26 @@ fn checkpoint_runs_on_a_file() {
     let pool = Pool::new(open(&config, &[]).unwrap(), 1);
     pool.checkpoint().unwrap();
 }
+
+#[test]
+fn allowed_directories_are_quoted_and_joined() {
+    let first = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let second = parent.path().join("it's");
+    std::fs::create_dir(&second).unwrap();
+    let mut config = DuckDbConfig::default();
+    config.allowed_directories = vec![
+        format!("{}/", first.path().display()),
+        format!("{}/", second.display()),
+    ];
+    let conn = open(&config, &[]).unwrap();
+    read_csv(&conn, &csv(first.path(), "a.csv")).unwrap();
+    read_csv(&conn, &csv(&second, "b.csv")).unwrap();
+}
+
+#[test]
+fn setup_hooks_run_before_the_lock() {
+    let set: Setup = Arc::new(|conn: &Connection| conn.execute_batch("SET default_order = 'desc'"));
+    let conn = open(&DuckDbConfig::default(), &[set]).unwrap();
+    assert_eq!(setting(&conn, "default_order"), "DESC");
+}

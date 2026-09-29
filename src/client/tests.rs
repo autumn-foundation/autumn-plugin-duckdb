@@ -778,3 +778,65 @@ async fn types_that_lose_data_are_refused() {
         .unwrap();
     assert_eq!(rows[0].get("c"), Some(&Value::Text("12:00:00+05".into())));
 }
+
+#[tokio::test]
+async fn fetch_optional_reads_one_row_only() {
+    let db = db_with(|c| c.max_rows = 1).await;
+    let row = db.query("SELECT * FROM range(5)").fetch_optional().await;
+    assert!(row.unwrap().is_some());
+    assert_eq!(counter(&db, "duckdb_rows_returned_total", None), 1.0);
+}
+
+#[tokio::test]
+async fn the_statement_check_needs_no_connection() {
+    let db = db_with(|c| c.max_connections = 1).await;
+    let (holder, release) = hold(&db).await;
+    let started = counter(&db, "duckdb_calls_started_total", None);
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        db.query("SELECT 1; SELECT 2").fetch(),
+    )
+    .await
+    .expect("the check must not wait for a connection")
+    .unwrap_err();
+    assert!(
+        matches!(err, DuckDbError::MultipleStatements { .. }),
+        "{err:?}"
+    );
+    assert_eq!(counter(&db, "duckdb_calls_started_total", None), started);
+    release.send(()).unwrap();
+    holder.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_call_after_shutdown_is_not_counted() {
+    let db = db().await;
+    db.shutdown().await;
+    assert!(db.query("SELECT 1").fetch().await.is_err());
+    assert_eq!(counter(&db, "duckdb_calls_started_total", None), 0.0);
+}
+
+#[tokio::test]
+async fn a_real_write_conflict_is_retryable() {
+    let db = db().await;
+    db.query("CREATE TABLE c (id INT PRIMARY KEY, n INT)")
+        .execute()
+        .await
+        .unwrap();
+    db.query("INSERT INTO c VALUES (1, 0)")
+        .execute()
+        .await
+        .unwrap();
+    let err = db
+        .with_connection(|conn| {
+            let other = conn.try_clone()?;
+            conn.execute_batch("BEGIN; UPDATE c SET n = 1 WHERE id = 1;")?;
+            other.execute_batch("BEGIN; UPDATE c SET n = 2 WHERE id = 1;")?;
+            conn.execute_batch("COMMIT")
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), Some("TransactionContext"), "{err:?}");
+    assert!(err.is_retryable());
+    assert_eq!(err.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+}

@@ -140,3 +140,10 @@ fn the_debug_text_hides_the_detail() {
     assert!(!text.contains("id: 1"), "{text}");
     assert!(text.contains("Constraint"), "{text}");
 }
+
+#[test]
+fn a_failure_without_a_message_gives_unknown() {
+    let failure = duckdb::ffi::Error::new(1);
+    let err = DuckDbError::from(duckdb::Error::DuckDBFailure(failure, None));
+    assert_eq!(err.class(), Some("Unknown"));
+}

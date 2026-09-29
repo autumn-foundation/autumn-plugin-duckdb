@@ -63,8 +63,10 @@ fn a_missing_column_gives_an_error() {
 fn a_row_decodes_into_a_tuple_by_position() {
     let row = row(&[("a", Value::Int(1)), ("b", text("x"))]);
     assert_eq!(row.decode::<(i64, String)>().unwrap(), (1, "x".into()));
-    assert!(row.decode::<(i64,)>().is_err());
-    assert!(row.decode::<(i64, String, bool)>().is_err());
+    let err = row.decode::<(i64,)>().unwrap_err();
+    assert!(err.to_string().contains("fewer columns"), "{err}");
+    let err = row.decode::<(i64, String, bool)>().unwrap_err();
+    assert!(err.to_string().contains("tuple of size 3"), "{err}");
 }
 
 #[test]
@@ -322,4 +324,43 @@ fn a_one_column_list_or_map_row_decodes_into_its_value() {
     assert_eq!(scalar.decode::<Vec<i64>>().unwrap(), vec![3]);
     let by_name: HashMap<String, i64> = scalar.decode().unwrap();
     assert_eq!(by_name, HashMap::from([("n".into(), 3)]));
+}
+
+#[test]
+fn a_one_column_scalar_error_names_the_column() {
+    let err = row(&[("n", text("x"))]).decode::<i64>().unwrap_err();
+    assert_eq!(err.column(), Some("n"));
+}
+
+#[test]
+fn a_row_decodes_into_json() {
+    let row = row(&[
+        ("id", Value::Int(1)),
+        ("tags", Value::List(vec![text("a")])),
+    ]);
+    let json: serde_json::Value = row.decode().unwrap();
+    assert_eq!(json, serde_json::json!({"id": 1, "tags": ["a"]}));
+}
+
+#[test]
+fn a_row_decodes_into_a_newtype_or_an_enum() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Count(i64);
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "lowercase")]
+    enum Mood {
+        Sad,
+    }
+    assert_eq!(
+        row(&[("n", Value::Int(4))]).decode::<Count>().unwrap(),
+        Count(4)
+    );
+    assert_eq!(
+        row(&[("m", text("sad"))]).decode::<Mood>().unwrap(),
+        Mood::Sad
+    );
+    let err = row(&[("a", text("sad")), ("b", text("sad"))])
+        .decode::<Mood>()
+        .unwrap_err();
+    assert!(err.to_string().contains("one column"), "{err}");
 }
