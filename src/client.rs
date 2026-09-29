@@ -35,6 +35,9 @@ use crate::value::{Row, Value};
 /// The pause between repeated interrupts of one call.
 const INTERRUPT_EVERY: Duration = Duration::from_millis(10);
 
+/// The largest call timeout: one day. A larger deadline can overflow.
+const MAX_TIMEOUT: Duration = Duration::from_secs(86_400);
+
 /// The longest wait at shutdown for open calls to stop before the checkpoint.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 
@@ -251,6 +254,8 @@ impl DuckDb {
             db: self.clone(),
             sql: sql.into(),
             params: Vec::new(),
+            timeout: None,
+            max_rows: None,
         }
     }
 
@@ -267,8 +272,11 @@ impl DuckDb {
         T: Send + 'static,
         F: FnOnce(&Connection) -> duckdb::Result<T> + Send + 'static,
     {
-        self.call(true, move |conn, _| work(conn).map_err(DuckDbError::from))
-            .await
+        let timeout = self.inner.config.timeout();
+        self.call(true, timeout, move |conn, _| {
+            work(conn).map_err(DuckDbError::from)
+        })
+        .await
     }
 
     /// The configuration.
@@ -336,7 +344,7 @@ impl DuckDb {
     }
 
     /// Runs `work` with a connection, a deadline and an interrupt ticket.
-    async fn call<T, F>(&self, counted: bool, work: F) -> Result<T, DuckDbError>
+    async fn call<T, F>(&self, counted: bool, timeout: Duration, work: F) -> Result<T, DuckDbError>
     where
         T: Send + 'static,
         F: FnOnce(&Connection, &Stop) -> Result<T, DuckDbError> + Send + 'static,
@@ -346,18 +354,22 @@ impl DuckDb {
             return Err(DuckDbError::ShuttingDown);
         }
         let mut guard = Guard::new(inner, counted);
-        let result = self.run(&mut guard, work).await;
+        let result = self.run(&mut guard, timeout, work).await;
         guard.outcome = Some(outcome(&result));
         result
     }
 
-    async fn run<T, F>(&self, guard: &mut Guard<'_>, work: F) -> Result<T, DuckDbError>
+    async fn run<T, F>(
+        &self,
+        guard: &mut Guard<'_>,
+        timeout: Duration,
+        work: F,
+    ) -> Result<T, DuckDbError>
     where
         T: Send + 'static,
         F: FnOnce(&Connection, &Stop) -> Result<T, DuckDbError> + Send + 'static,
     {
         let inner = &*self.inner;
-        let timeout = inner.config.timeout();
         let deadline = Instant::now() + timeout;
         let permit = tokio::time::timeout_at(deadline, inner.pool.acquire())
             .await
@@ -413,18 +425,20 @@ pub struct DuckDbQuery {
     db: DuckDb,
     sql: String,
     params: Vec<Param>,
+    timeout: Option<Duration>,
+    max_rows: Option<usize>,
 }
 
 impl DuckDbQuery {
     /// Sets the timeout of this query. It replaces `timeout_ms`. The largest timeout is one day.
-    pub fn timeout(self, timeout: Duration) -> Self {
-        let _ = timeout;
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout.min(MAX_TIMEOUT));
         self
     }
 
     /// Sets the row limit of this query. It replaces `max_rows`.
-    pub fn max_rows(self, max_rows: usize) -> Self {
-        let _ = max_rows;
+    pub const fn max_rows(mut self, max_rows: usize) -> Self {
+        self.max_rows = Some(max_rows);
         self
     }
 
@@ -441,8 +455,11 @@ impl DuckDbQuery {
     /// Returns [`DuckDbError`] if the statement fails or a limit applies.
     pub async fn execute(self) -> Result<usize, DuckDbError> {
         check_statements(&self.sql)?;
-        let Self { db, sql, params } = self;
-        db.call(true, move |conn, _| {
+        let timeout = self.call_timeout();
+        let Self {
+            db, sql, params, ..
+        } = self;
+        db.call(true, timeout, move |conn, _| {
             let mut stmt = prepare(conn, &sql, params.len())?;
             Ok(stmt.execute(params_from_iter(params.iter()))?)
         })
@@ -498,11 +515,20 @@ impl DuckDbQuery {
         self.fetch_optional_as().await?.ok_or(DuckDbError::NotFound)
     }
 
+    /// The timeout of this query.
+    fn call_timeout(&self) -> Duration {
+        self.timeout
+            .unwrap_or_else(|| self.db.inner.config.timeout())
+    }
+
     /// Reads up to `take` rows, in the row and byte limits.
     async fn rows(self, take: usize) -> Result<Vec<Row>, DuckDbError> {
         check_statements(&self.sql)?;
-        let Self { db, sql, params } = self;
-        let max_rows = db.inner.config.max_rows;
+        let timeout = self.call_timeout();
+        let max_rows = self.max_rows.unwrap_or(self.db.inner.config.max_rows);
+        let Self {
+            db, sql, params, ..
+        } = self;
         let max_bytes = db.inner.config.max_result_bytes;
         let limits = Limits {
             take,
@@ -510,7 +536,7 @@ impl DuckDbQuery {
             max_bytes,
         };
         let rows = db
-            .call(true, move |conn, stop| {
+            .call(true, timeout, move |conn, stop| {
                 read_rows(conn, &sql, &params, limits, &|| stop.requested())
             })
             .await?;
