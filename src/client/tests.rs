@@ -209,6 +209,34 @@ async fn more_than_one_statement_is_refused_before_it_runs() {
 }
 
 #[tokio::test]
+async fn lexer_tricks_do_not_run_a_second_statement() {
+    let db = db().await;
+    for sql in [
+        "SELECT 1 --\r; CREATE TABLE marker (i INT); SELECT 2",
+        "SELECT 1 AS a$x$; CREATE TABLE marker (i INT); SELECT 1 AS b$x$",
+        "SELECT $é$'$é$; CREATE TABLE marker (i INT); SELECT '1'",
+    ] {
+        let err = db.query(sql).execute().await.unwrap_err();
+        assert!(
+            matches!(err, DuckDbError::MultipleStatements { .. }),
+            "{sql}: {err:?}"
+        );
+    }
+    let err = db
+        .query("SELECT 'open; CREATE TABLE marker (i INT)")
+        .execute()
+        .await
+        .unwrap_err();
+    assert_eq!(err, DuckDbError::OpenLiteral);
+    let tables: i64 = db
+        .query("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'marker'")
+        .fetch_one_as()
+        .await
+        .unwrap();
+    assert_eq!(tables, 0);
+}
+
+#[tokio::test]
 async fn a_wrong_parameter_count_is_refused() {
     let db = db().await;
     let err = db.query("SELECT ?, ?").bind(1).fetch().await.unwrap_err();

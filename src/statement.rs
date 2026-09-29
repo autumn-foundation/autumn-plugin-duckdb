@@ -12,7 +12,11 @@
 //! - An open literal or comment continues to the end of the text.
 
 /// Gives the number of statements in `sql`.
-pub(crate) fn count(sql: &str) -> usize {
+pub(crate) fn count(sql: &str) -> Option<usize> {
+    Some(count_old(sql))
+}
+
+fn count_old(sql: &str) -> usize {
     let bytes = sql.as_bytes();
     let mut statements = 0;
     let mut has_text = false;

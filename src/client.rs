@@ -532,7 +532,7 @@ impl std::fmt::Debug for DuckDbQuery {
 /// Refuses SQL text with more than one statement.
 fn check_statements(sql: &str) -> Result<(), DuckDbError> {
     match statement::count(sql) {
-        statements @ 2.. => Err(DuckDbError::MultipleStatements { statements }),
+        Some(statements @ 2..) => Err(DuckDbError::MultipleStatements { statements }),
         _ => Ok(()),
     }
 }

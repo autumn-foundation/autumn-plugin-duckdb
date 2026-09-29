@@ -43,6 +43,9 @@ pub enum DuckDbError {
         /// The statements in the SQL text.
         statements: usize,
     },
+    /// The SQL text ends in an open literal or block comment. The plugin cannot count its statements.
+    #[error("the SQL ends in an open literal or comment")]
+    OpenLiteral,
     /// The number of parameters is not the number of placeholders.
     #[error("the SQL has {placeholders} placeholders, but the query has {parameters} parameters")]
     #[non_exhaustive]
