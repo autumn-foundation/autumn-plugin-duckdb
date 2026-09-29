@@ -91,6 +91,7 @@ impl Ticket {
     /// Marks the call as cancelled. Interrupts it again and again until it ends.
     ///
     /// DuckDB ignores an interrupt before a query starts. So one interrupt is not sufficient.
+    /// The repeat runs on its own thread, because a runtime shutdown drops async tasks.
     fn cancel(self: &Arc<Self>, reason: Reason) {
         {
             let mut state = self.state();
@@ -99,23 +100,15 @@ impl Ticket {
             }
             state.reason = Some(reason);
         }
-        let ticket = Arc::clone(self);
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                runtime.spawn(async move {
-                    while ticket.interrupt() {
-                        tokio::time::sleep(INTERRUPT_EVERY).await;
-                    }
-                });
-            }
-            Err(_) => {
-                std::thread::spawn(move || {
-                    while ticket.interrupt() {
-                        std::thread::sleep(INTERRUPT_EVERY);
-                    }
-                });
-            }
+        if !self.interrupt() {
+            return;
         }
+        let ticket = Arc::clone(self);
+        std::thread::spawn(move || {
+            while ticket.interrupt() {
+                std::thread::sleep(INTERRUPT_EVERY);
+            }
+        });
     }
 
     /// Interrupts the query while the call runs. Gives `false` after the call ends.
