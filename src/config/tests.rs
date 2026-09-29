@@ -130,7 +130,11 @@ fn profile_file_overrides_the_inline_profile() {
         "autumn.toml",
         "[duckdb]\npath = \"base\"\n[profile.staging.duckdb]\npath = \"inline\"\n",
     );
-    write(dir.path(), "autumn-staging.toml", "[duckdb]\npath = \"file\"\n");
+    write(
+        dir.path(),
+        "autumn-staging.toml",
+        "[duckdb]\npath = \"file\"\n",
+    );
     let env = env_for(dir.path()).with("AUTUMN_PROFILE", "staging");
     assert_eq!(resolve(dir.path(), &env).unwrap().path, "file");
 }
@@ -167,7 +171,10 @@ fn environment_overrides_the_files() {
     assert_eq!(config.max_rows, 7);
     assert!(!config.health_check);
     assert_eq!(config.access_mode, AccessMode::ReadWrite);
-    assert_eq!(config.allowed_directories, vec!["a/".to_owned(), "b/".to_owned()]);
+    assert_eq!(
+        config.allowed_directories,
+        vec!["a/".to_owned(), "b/".to_owned()]
+    );
 }
 
 #[test]
@@ -212,7 +219,11 @@ fn unknown_keys_fail() {
 #[test]
 fn a_bad_access_mode_fails() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "autumn.toml", "[duckdb]\naccess_mode = \"write_only\"\n");
+    write(
+        dir.path(),
+        "autumn.toml",
+        "[duckdb]\naccess_mode = \"write_only\"\n",
+    );
     assert!(resolve(dir.path(), &env_for(dir.path())).is_err());
 }
 
@@ -264,7 +275,11 @@ fn a_section_name_with_a_dash_gives_a_valid_variable() {
 #[test]
 fn only_the_first_profile_file_is_read() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "autumn-prod.toml", "[duckdb]\npath = \"prod\"\n");
+    write(
+        dir.path(),
+        "autumn-prod.toml",
+        "[duckdb]\npath = \"prod\"\n",
+    );
     write(
         dir.path(),
         "autumn-production.toml",
@@ -279,7 +294,11 @@ fn only_the_first_profile_file_is_read() {
 #[test]
 fn a_release_build_uses_the_prod_profile() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "autumn.toml", "[profile.prod.duckdb]\npath = \"p\"\n");
+    write(
+        dir.path(),
+        "autumn.toml",
+        "[profile.prod.duckdb]\npath = \"p\"\n",
+    );
     let env = env_for(dir.path()).with("AUTUMN_IS_DEBUG", "0");
     assert_eq!(resolve(dir.path(), &env).unwrap().path, "p");
 }
