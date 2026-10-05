@@ -4,7 +4,7 @@ Guidance for agents that work on this crate.
 
 ## What this crate is
 
-`autumn-plugin-duckdb` is an Autumn plugin. Autumn is `autumn-web` 0.7. Handlers run DuckDB queries through the `DuckDb` extractor. Read `docs/planning.md` before a design change.
+`autumn-plugin-duckdb` is an Autumn plugin. Autumn is `autumn-web` 0.8. Handlers run DuckDB queries through the `DuckDb` extractor. Read `docs/planning.md` before a design change.
 
 ## Commands
 

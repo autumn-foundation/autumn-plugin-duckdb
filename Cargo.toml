@@ -22,7 +22,7 @@ json = ["duckdb/json"]
 
 [dependencies]
 # No default features: the host app selects the Autumn features.
-autumn-web = { version = ">=0.7, <0.8", default-features = false }
+autumn-web = { version = ">=0.8, <0.9", default-features = false }
 axum = { version = "0.8", default-features = false }
 # duckdb-rs puts each DuckDB release in a minor version. The API can change.
 duckdb = { version = "~1.10505", default-features = false }
