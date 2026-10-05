@@ -190,7 +190,7 @@ The error text and the debug text show the DuckDB error class only, for example 
 
 ## Compatibility
 
-- `autumn-web` 0.7.
+- `autumn-web` 0.8.
 - DuckDB 1.5 through the `duckdb` crate `~1.10505`. `duckdb-rs` puts each DuckDB release in a minor version, so an upgrade is a new minor version of this crate.
 - Rust 1.88 or later.
 

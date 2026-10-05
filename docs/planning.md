@@ -72,7 +72,7 @@ Question: "How can we make this plugin fail?" Each answer gives a countermeasure
 
 ### White hat (facts)
 
-- Autumn 0.7 gives `Plugin`, `on_startup`, `on_shutdown`, `health_indicator`, `metrics_source` and `config_section`.
+- Autumn 0.8 gives `Plugin`, `on_startup`, `on_shutdown`, `health_indicator`, `metrics_source` and `config_section`.
 - The `duckdb` crate 1.10505 wraps DuckDB. The `bundled` feature builds DuckDB from source.
 - A `Connection` is `Send` but not `Sync`. `try_clone` gives a new connection to the same database.
 - `InterruptHandle::interrupt` stops the running query on one connection. The query fails with an `INTERRUPT Error`.
