@@ -8,10 +8,9 @@
 
 - Support `autumn-web` 0.9. The plugin now needs `autumn-web` 0.9.
 
-- Require `autumn-web` 0.8.
-
 ## 0.1.0
 
+- Require `autumn-web` 0.8.
 - `DuckDbPlugin` and the `DuckDb` extractor. `DuckDb::open` and `DuckDb::shutdown` for use without the plugin.
 - `DuckDbQuery` with bound parameters, `execute`, `fetch`, `fetch_as`, `fetch_optional`, `fetch_optional_as`, `fetch_one` and `fetch_one_as`.
 - Per-query `timeout` and `max_rows`.
