@@ -14,7 +14,7 @@ An [Autumn](https://github.com/autumn-foundation/autumn) plugin for [DuckDB](htt
 
 ```toml
 [dependencies]
-autumn-plugin-duckdb = "0.1"
+autumn-plugin-duckdb = "0.2"
 ```
 
 ```rust,ignore
@@ -190,7 +190,7 @@ The error text and the debug text show the DuckDB error class only, for example 
 
 ## Compatibility
 
-- `autumn-web` 0.8.
+- `autumn-web` 0.9.
 - DuckDB 1.5 through the `duckdb` crate `~1.10505`. `duckdb-rs` puts each DuckDB release in a minor version, so an upgrade is a new minor version of this crate.
 - Rust 1.88 or later.
 

@@ -33,15 +33,17 @@ async fn totals(db: DuckDb, Path(year): Path<i32>) -> AutumnResult<Json<Vec<Tota
 
 #[autumn_web::main]
 async fn main() {
-    autumn_web::app()
-        .plugin(DuckDbPlugin::new().setup(|conn| {
-            conn.execute_batch(
-                "CREATE TABLE sales (region VARCHAR, year INTEGER, amount DECIMAL(12, 2));
-                 INSERT INTO sales VALUES
-                     ('north', 2024, 120.50), ('south', 2024, 80.00), ('north', 2023, 99.99);",
-            )
-        }))
-        .routes(routes![totals])
-        .run()
-        .await;
+    Box::pin(
+        autumn_web::app()
+            .plugin(DuckDbPlugin::new().setup(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE sales (region VARCHAR, year INTEGER, amount DECIMAL(12, 2));
+                     INSERT INTO sales VALUES
+                         ('north', 2024, 120.50), ('south', 2024, 80.00), ('north', 2023, 99.99);",
+                )
+            }))
+            .routes(routes![totals])
+            .run(),
+    )
+    .await;
 }
