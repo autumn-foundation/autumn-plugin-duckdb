@@ -1,6 +1,6 @@
 [package]
 name = "autumn-plugin-duckdb"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Autumn plugin: run DuckDB SQL queries from Autumn handlers."
@@ -22,7 +22,7 @@ json = ["duckdb/json"]
 
 [dependencies]
 # No default features: the host app selects the Autumn features.
-autumn-web = { version = ">=0.8, <0.9", default-features = false }
+autumn-web = { version = ">=0.9, <0.10", default-features = false }
 axum = { version = "0.8", default-features = false }
 # duckdb-rs puts each DuckDB release in a minor version. The API can change.
 duckdb = { version = "~1.10505", default-features = false }
