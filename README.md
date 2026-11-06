@@ -17,7 +17,7 @@ An [Autumn](https://github.com/autumn-foundation/autumn) plugin for [DuckDB](htt
 autumn-plugin-duckdb = "0.3"
 ```
 
-```rust,ignore
+```rust,no_run
 use autumn_plugin_duckdb::{DuckDb, DuckDbPlugin, DuckDbResultExt as _};
 use autumn_web::prelude::*;
 
