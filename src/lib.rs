@@ -69,3 +69,8 @@ pub use error::{DuckDbError, DuckDbResultExt};
 pub use param::Param;
 pub use plugin::{DuckDbPlugin, PLUGIN_NAME};
 pub use value::{Row, Value};
+
+/// Compiles the Rust snippets of the README as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
