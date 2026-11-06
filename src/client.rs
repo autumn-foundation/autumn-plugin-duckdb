@@ -40,7 +40,7 @@ use crate::value::{Row, Value, shape_of};
 const INTERRUPT_EVERY: Duration = Duration::from_millis(10);
 
 /// The largest call timeout: one day. A larger deadline can overflow.
-const MAX_TIMEOUT: Duration = Duration::from_secs(86_400);
+const MAX_TIMEOUT: Duration = Duration::from_hours(24);
 
 /// The longest wait at shutdown for open calls to stop before the checkpoint.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);

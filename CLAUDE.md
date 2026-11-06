@@ -4,7 +4,7 @@ Guidance for agents that work on this crate.
 
 ## What this crate is
 
-`autumn-plugin-duckdb` is an Autumn plugin. Autumn is `autumn-web` 0.9. Handlers run DuckDB queries through the `DuckDb` extractor. Read `docs/planning.md` before a design change.
+`autumn-plugin-duckdb` is an Autumn plugin. Autumn is `autumn-web` 0.10. Handlers run DuckDB queries through the `DuckDb` extractor. Read `docs/planning.md` before a design change.
 
 ## Commands
 
@@ -13,13 +13,13 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo check --locked --lib
 cargo test --locked --all-targets --all-features
-cargo +1.88.0 check --locked --all-targets --all-features
+cargo +1.97 check --locked --all-targets --all-features
 cargo test --locked --doc --all-features
 RUSTDOCFLAGS=-D\ warnings cargo doc --locked --no-deps --all-features
 cargo llvm-cov --locked --all-features --ignore-filename-regex '/tests\.rs$' --fail-under-lines 90
 ```
 
-The MSRV is 1.88. The first build compiles DuckDB from C++ source. It takes some minutes.
+The MSRV is 1.97. The first build compiles DuckDB from C++ source. It takes some minutes.
 
 ## Architecture
 
