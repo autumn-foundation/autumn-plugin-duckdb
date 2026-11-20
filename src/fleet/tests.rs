@@ -11,6 +11,8 @@ use autumn_web::plugin_conformance::fleet::{FleetFixture, run_fleet_conformance}
 use autumn_web::reexports::diesel_async::pooled_connection::deadpool::Pool;
 use autumn_web::replication::{FileDestination, ReplicaDestination, ReplicationSettings};
 
+use axum::extract::FromRequestParts as _;
+
 use super::*;
 
 /// The kit fixture. With `replicated`, generations go to a local directory.
@@ -33,6 +35,13 @@ fn control_pool(dir: &Path) -> Pool<RuntimeConnection> {
 impl FleetFixture for Fixture {
     type Engine = DuckDbEngine;
 
+    // The trait needs an `async fn`. This body has no `.await`, and Clippy
+    // flags that. Older Clippy releases do not know the lint.
+    #[allow(
+        unknown_lints,
+        clippy::unused_async_trait_impl,
+        reason = "the FleetFixture trait sets the signature"
+    )]
     async fn fleet(
         &self,
         config: DatabaseFleetConfig,
@@ -454,4 +463,97 @@ async fn ownership_needs_a_store() {
     let state = AppState::for_test();
     let err = start(&state, &config, config.engine()).await.err().unwrap();
     assert!(err.contains("ownership"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_extractor_opens_the_database_of_the_request_key() {
+    let scratch = tempfile::tempdir().unwrap();
+    let config = DuckDbFleetConfig::new(fleet_config(&scratch.path().join("fleet")));
+    let state = AppState::for_test();
+    let runtime = start(&state, &config, config.engine()).await.unwrap();
+
+    let (mut parts, ()) = http::Request::new(()).into_parts();
+    parts
+        .extensions
+        .insert(autumn_web::sharding::ShardKeyOverride("acme".to_owned()));
+    let db = FleetDuckDb::from_request_parts(&mut parts, &state)
+        .await
+        .unwrap();
+    db.query("SELECT 1").execute().await.unwrap();
+    assert_eq!(runtime.fleet.open_keys().len(), 1);
+    drop(db);
+
+    // With no key and no config, the request gets a 503.
+    let (mut parts, ()) = http::Request::new(()).into_parts();
+    let err = FleetDuckDb::from_request_parts(&mut parts, &state)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(err.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+    runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_extractor_needs_a_fleet() {
+    let state = AppState::for_test();
+    let (mut parts, ()) = http::Request::new(()).into_parts();
+    parts
+        .extensions
+        .insert(autumn_web::sharding::ShardKeyOverride("acme".to_owned()));
+    let err = FleetDuckDb::from_request_parts(&mut parts, &state)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(err.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+    assert!(FleetDuckDb::for_key(&state, "acme").await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_hooks_run_at_open() {
+    let scratch = tempfile::tempdir().unwrap();
+    let config = DuckDbFleetConfig::new(fleet_config(&scratch.path().join("fleet")));
+    let engine = config
+        .engine()
+        .ship_every(Duration::from_secs(5))
+        .resident_bytes(1024)
+        .setup(|conn| conn.execute_batch("CREATE TABLE IF NOT EXISTS notes (body VARCHAR)"));
+    let text = format!("{engine:?}");
+    assert!(
+        text.contains("setups: 1") && text.contains("resident_bytes: 1024"),
+        "{text}"
+    );
+    assert!(matches!(
+        engine.ship_mode(),
+        ShipMode::Generations { every } if every == Duration::from_secs(5)
+    ));
+    let state = AppState::for_test();
+    let runtime = start(&state, &config, engine).await.unwrap();
+    let db = FleetDuckDb::for_key(&state, "acme").await.unwrap();
+    db.query("INSERT INTO notes VALUES ('hi')")
+        .execute()
+        .await
+        .unwrap();
+    assert_eq!(runtime.fleet.engine().resident_bytes(&db), 1024);
+    drop(db);
+    runtime.shutdown().await;
+}
+
+#[test]
+fn remove_reports_a_missing_file() {
+    let scratch = tempfile::tempdir().unwrap();
+    let engine = DuckDbEngine::new(DuckDbConfig::default());
+    let fleet = DatabaseFleet::with_engine(
+        &fleet_config(&scratch.path().join("fleet")),
+        DuckDbEngine::new(DuckDbConfig::default()),
+    )
+    .unwrap();
+    let key = key(&fleet, "acme");
+    let path = scratch.path().join("gone.duckdb");
+    assert!(!engine.remove(&key, &path).unwrap());
+    std::fs::write(&path, b"x").unwrap();
+    std::fs::write(wal_of(&path), b"x").unwrap();
+    assert!(engine.remove(&key, &path).unwrap());
+    assert!(!path.exists() && !wal_of(&path).exists());
+    assert!(!engine.exists(&path));
+    assert_eq!(engine.sidecars(&path), vec![wal_of(&path)]);
 }
