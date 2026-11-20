@@ -99,7 +99,7 @@ fn quote(text: &str) -> String {
 
 /// The connection pool.
 pub(crate) struct Pool {
-    root: Mutex<Connection>,
+    root: Mutex<Option<Connection>>,
     permits: Arc<Semaphore>,
     size: usize,
 }
@@ -120,7 +120,7 @@ impl Pool {
     /// Makes a pool of `size` connections from `root`.
     pub(crate) fn new(root: Connection, size: usize) -> Arc<Self> {
         Arc::new(Self {
-            root: Mutex::new(root),
+            root: Mutex::new(Some(root)),
             permits: Arc::new(Semaphore::new(size)),
             size,
         })
@@ -148,27 +148,58 @@ impl Pool {
         self.permits.close();
     }
 
+    #[cfg(feature = "fleet")]
+    /// Waits for every permit. No call runs while the permit lives.
+    pub(crate) async fn acquire_all(self: &Arc<Self>) -> Result<OwnedSemaphorePermit, DuckDbError> {
+        let count = u32::try_from(self.size).map_err(|_| DuckDbError::ShuttingDown)?;
+        Arc::clone(&self.permits)
+            .acquire_many_owned(count)
+            .await
+            .map_err(|_| DuckDbError::ShuttingDown)
+    }
+
     /// Runs `SELECT 1` on the root connection.
     pub(crate) fn ping(&self) -> Result<(), DuckDbError> {
-        self.root().execute_batch("SELECT 1")?;
-        Ok(())
+        self.with_root(|root| root.execute_batch("SELECT 1"))
     }
 
     /// Runs `CHECKPOINT` on the root connection.
     pub(crate) fn checkpoint(&self) -> Result<(), DuckDbError> {
-        self.root().execute_batch("CHECKPOINT")?;
-        Ok(())
+        self.with_root(|root| root.execute_batch("CHECKPOINT"))
     }
 
-    fn root(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.root.lock().unwrap_or_else(PoisonError::into_inner)
+    /// Runs `work` on the root connection.
+    pub(crate) fn with_root<T>(
+        &self,
+        work: impl FnOnce(&Connection) -> duckdb::Result<T>,
+    ) -> Result<T, DuckDbError> {
+        self.root
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or(Err(DuckDbError::ShuttingDown), |root| {
+                work(root).map_err(DuckDbError::from)
+            })
+    }
+
+    #[cfg(feature = "fleet")]
+    /// Closes the root connection.
+    ///
+    /// DuckDB closes the database when the last open connection closes.
+    pub(crate) fn drop_root(&self) {
+        let root = self
+            .root
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(root);
     }
 }
 
 impl Permit {
     /// Makes a new connection.
     pub(crate) fn connect(self) -> Result<Lease, DuckDbError> {
-        let conn = self.pool.root().try_clone()?;
+        let conn = self.pool.with_root(Connection::try_clone)?;
         Ok(Lease {
             conn,
             _permit: self.permit,

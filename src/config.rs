@@ -198,24 +198,7 @@ impl DuckDbConfig {
     ///
     /// See [`resolve`](Self::resolve).
     pub fn resolve_with_env(section: &str, env: &dyn Env) -> Result<Self, ConfigError> {
-        let (selected, profile) = active_profile(env);
-        let mut merged = toml::Table::new();
-        if let Some(base) = read_toml(&config_file("autumn.toml", env))? {
-            merge_section(&mut merged, base.get(section), section)?;
-            for name in inline_profile_names(&profile) {
-                let inline = base
-                    .get("profile")
-                    .and_then(|p| p.get(name))
-                    .and_then(|p| p.get(section));
-                merge_section(&mut merged, inline, section)?;
-            }
-        }
-        for name in autumn_web::config::profile_override_file_lookup_names(&profile, &selected) {
-            if let Some(file) = read_toml(&config_file(&format!("autumn-{name}.toml"), env))? {
-                merge_section(&mut merged, file.get(section), section)?;
-                break;
-            }
-        }
+        let mut merged = layered_section(section, env)?;
         apply_env(&mut merged, section, env)?;
         let config: Self = toml::Value::Table(merged)
             .try_into()
@@ -312,6 +295,30 @@ impl DuckDbConfig {
     pub fn is_in_memory(&self) -> bool {
         self.path == IN_MEMORY
     }
+}
+
+/// Merges `[section]` from `autumn.toml`, its inline profile and `autumn-<profile>.toml`.
+/// It applies no variables.
+pub(crate) fn layered_section(section: &str, env: &dyn Env) -> Result<toml::Table, ConfigError> {
+    let (selected, profile) = active_profile(env);
+    let mut merged = toml::Table::new();
+    if let Some(base) = read_toml(&config_file("autumn.toml", env))? {
+        merge_section(&mut merged, base.get(section), section)?;
+        for name in inline_profile_names(&profile) {
+            let inline = base
+                .get("profile")
+                .and_then(|p| p.get(name))
+                .and_then(|p| p.get(section));
+            merge_section(&mut merged, inline, section)?;
+        }
+    }
+    for name in autumn_web::config::profile_override_file_lookup_names(&profile, &selected) {
+        if let Some(file) = read_toml(&config_file(&format!("autumn-{name}.toml"), env))? {
+            merge_section(&mut merged, file.get(section), section)?;
+            break;
+        }
+    }
+    Ok(merged)
 }
 
 /// Returns the selected profile text and the Autumn profile name, as Autumn does.

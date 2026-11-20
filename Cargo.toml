@@ -1,6 +1,6 @@
 [package]
 name = "autumn-plugin-duckdb"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.97"
 description = "Autumn plugin: run DuckDB SQL queries from Autumn handlers."
@@ -19,10 +19,12 @@ bundled = ["duckdb/bundled"]
 parquet = ["duckdb/parquet"]
 # Builds the JSON extension into DuckDB.
 json = ["duckdb/json"]
+# A fleet of DuckDB files: one file for each tenant or slot.
+fleet = ["autumn-web/db"]
 
 [dependencies]
 # No default features: the host app selects the Autumn features.
-autumn-web = { version = ">=0.10, <0.11", default-features = false }
+autumn-web = { version = ">=0.11, <0.12", default-features = false }
 axum = { version = "0.8", default-features = false }
 # duckdb-rs puts each DuckDB release in a minor version. The API can change.
 duckdb = { version = "~1.10505", default-features = false }
@@ -35,12 +37,14 @@ toml = "1.1"
 tracing = "0.1"
 
 [dev-dependencies]
+autumn-web = { version = ">=0.11, <0.12", default-features = false, features = ["plugin-conformance", "sqlite"] }
 proptest = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 
 [package.metadata.docs.rs]
-all-features = true
+# `fleet` needs an Autumn database backend. The app selects it.
+features = ["bundled", "parquet", "json", "fleet", "autumn-web/sqlite"]
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -50,7 +50,7 @@ jobs:
       - run: cargo check --locked --lib
       - run: cargo test --locked --all-targets --all-features
       - run: cargo test --locked --doc --all-features
-      - run: cargo doc --locked --no-deps --all-features
+      - run: cargo doc --locked --no-deps --all-features --features autumn-web/sqlite
         env:
           RUSTDOCFLAGS: -D warnings
 

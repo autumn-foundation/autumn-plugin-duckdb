@@ -4,7 +4,7 @@ Guidance for agents that work on this crate.
 
 ## What this crate is
 
-`autumn-plugin-duckdb` is an Autumn plugin. Autumn is `autumn-web` 0.10. Handlers run DuckDB queries through the `DuckDb` extractor. Read `docs/planning.md` before a design change.
+`autumn-plugin-duckdb` is an Autumn plugin. Autumn is `autumn-web` 0.11. Handlers run DuckDB queries through the `DuckDb` extractor. Read `docs/planning.md` before a design change.
 
 ## Commands
 
@@ -37,6 +37,7 @@ The MSRV is 1.97. The first build compiles DuckDB from C++ source. It takes some
 | `plugin` | glue | `DuckDbPlugin` and the extractor. |
 | `health` | glue | The readiness check. |
 | `metrics` | glue | Counters and the metrics source. |
+| `fleet` | glue | `DuckDbEngine`, `DuckDbFleetPlugin` and `FleetDuckDb` (feature `fleet`): one file for each tenant or slot. |
 
 Each pure module has a `# Contract` doc section. Change the contract first. Then change the tests. Then change the code.
 

@@ -14,7 +14,7 @@ An [Autumn](https://github.com/autumn-foundation/autumn) plugin for [DuckDB](htt
 
 ```toml
 [dependencies]
-autumn-plugin-duckdb = "0.3"
+autumn-plugin-duckdb = "0.4"
 ```
 
 ```rust,no_run
@@ -181,6 +181,70 @@ A `Row` serializes as a JSON object. A map serializes as an object if each key i
 
 The error text and the debug text show the DuckDB error class only, for example `Catalog`. `DuckDbError::detail` gives the full message. Do not show it to users. It can hold SQL text and key values. The plugin decode messages name the column but not the value. A custom `Deserialize` impl can put a value in its own message.
 
+## Fleets
+
+The `fleet` feature gives each tenant (or each slot) its own DuckDB file. Autumn core runs the fleet: keys, paths, opens, idle closes, the memory budget, slot ownership and fencing. The plugin gives the DuckDB engine and the `FleetDuckDb` extractor. The fleet needs an Autumn database backend: turn on the `postgres` or the `sqlite` feature of `autumn-web`.
+
+```toml
+[dependencies]
+autumn-plugin-duckdb = { version = "0.4", features = ["fleet"] }
+```
+
+```rust,no_run
+# #[cfg(feature = "fleet")]
+# mod example {
+use autumn_plugin_duckdb::fleet::{DuckDbFleetPlugin, FleetDuckDb};
+use autumn_plugin_duckdb::DuckDbResultExt as _;
+use autumn_web::prelude::*;
+
+#[get("/events/count")]
+async fn count(db: FleetDuckDb) -> AutumnResult<String> {
+    let rows = db.query("SELECT count(*) AS n FROM events").fetch().await.or_http()?;
+    Ok(format!("{rows:?}"))
+}
+
+pub async fn run() {
+    autumn_web::app()
+        .plugin(DuckDbFleetPlugin::new().setup(|conn| {
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS events (at TIMESTAMP, kind TEXT)")
+        }))
+        .routes(routes![count])
+        .run()
+        .await;
+}
+# }
+# fn main() {}
+```
+
+The plugin reads `[duckdb_fleet]`. The top keys are the Autumn fleet keys, as in `[database.fleet]`. `engine` has the `[duckdb]` keys, except `path`:
+
+```toml
+[duckdb_fleet]
+mode = "tenant"                      # one file for each tenant; "slot" gives one for each slot
+root = "data/tenants"
+create_on_demand = true
+path = "{bucket}/{tenant}.duckdb"
+max_resident_bytes = 4294967296      # the memory budget of all open files
+ship_every_secs = 60                 # the interval between two replica generations
+resident_bytes = 268435456           # the memory that one open file counts
+
+[duckdb_fleet.engine]
+memory_limit = "256MB"
+threads = 2
+max_connections = 4
+
+[duckdb_fleet.ownership]
+owner = "host-a"
+```
+
+`AUTUMN_DUCKDB_FLEET__ROOT` and `AUTUMN_DUCKDB_FLEET__OWNERSHIP__OWNER` set `root` and `ownership.owner`.
+
+- The extractor opens the file of the request tenant. It gives `400` with no tenant and `421` when another host owns the slot. In a job, use `FleetDuckDb::for_key(&state, tenant)`.
+- Each file has the table `autumn_fleet.identity`. It holds the tenant key and the ownership epoch. A file of another key, or of a newer epoch, does not open.
+- A snapshot waits for the calls of the file, runs `CHECKPOINT` and copies the file. With replication, Autumn ships a new generation only when the file changed.
+- The plugin closes idle files, and all files at shutdown, in each role.
+- The engine passes the Autumn fleet conformance kit (`autumn_web::plugin_conformance::fleet`).
+
 ## Operations
 
 - Readiness: the `duckdb` indicator runs `SELECT 1` on the root connection. It stays up when all connections are in use.
@@ -190,7 +254,7 @@ The error text and the debug text show the DuckDB error class only, for example 
 
 ## Compatibility
 
-- `autumn-web` 0.10.
+- `autumn-web` 0.11.
 - DuckDB 1.5 through the `duckdb` crate `~1.10505`. `duckdb-rs` puts each DuckDB release in a minor version, so an upgrade is a new minor version of this crate.
 - Rust 1.97 or later.
 
