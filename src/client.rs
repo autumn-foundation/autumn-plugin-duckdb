@@ -350,6 +350,69 @@ impl DuckDb {
             .await;
     }
 
+    /// Closes the handle at once, on the calling thread. The fleet calls it.
+    ///
+    /// It refuses new calls and interrupts open calls. With no open call, it runs `CHECKPOINT`.
+    /// It then closes the root connection. DuckDB closes the file when the last call ends.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn close_now(&self) {
+        self.inner.shutting_down.store(true, Ordering::Release);
+        let open: Vec<Arc<Ticket>> = self
+            .inner
+            .open
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        for ticket in open {
+            ticket.cancel(Reason::Shutdown);
+        }
+        self.inner.pool.close();
+        if self.inner.pool.is_quiet()
+            && self.needs_checkpoint()
+            && let Err(err) = self.inner.pool.checkpoint()
+        {
+            tracing::warn!(class = err.class(), "the DuckDB checkpoint failed");
+        }
+        self.inner.pool.drop_root();
+    }
+
+    /// Returns `true` while a call holds a connection.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn is_busy(&self) -> bool {
+        !self.inner.pool.is_quiet()
+    }
+
+    /// Returns `true` after a close or a shutdown.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.shutting_down.load(Ordering::Acquire)
+    }
+
+    /// Runs `work` on the root connection, on a blocking thread, while no call runs.
+    ///
+    /// It waits for every connection of the pool. The call timeout limits the wait.
+    #[cfg(feature = "fleet")]
+    pub(crate) async fn exclusive<T, F>(&self, work: F) -> Result<T, DuckDbError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T, DuckDbError> + Send + 'static,
+    {
+        let timeout = self.inner.config.timeout();
+        let all = tokio::time::timeout(timeout, self.inner.pool.acquire_all())
+            .await
+            .map_err(|_| DuckDbError::Timeout { timeout })??;
+        let pool = Arc::clone(&self.inner.pool);
+        tokio::task::spawn_blocking(move || {
+            let result = pool.with_root(|root| Ok(work(root))).and_then(|r| r);
+            drop(all);
+            result
+        })
+        .await
+        .map_err(|_| DuckDbError::TaskFailed)?
+    }
+
     fn needs_checkpoint(&self) -> bool {
         let config = &self.inner.config;
         config.checkpoint_on_shutdown

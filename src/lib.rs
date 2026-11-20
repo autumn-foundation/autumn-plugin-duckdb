@@ -51,6 +51,8 @@ mod client;
 pub mod config;
 mod decode;
 mod error;
+#[cfg(feature = "fleet")]
+pub mod fleet;
 mod health;
 mod metrics;
 mod param;
